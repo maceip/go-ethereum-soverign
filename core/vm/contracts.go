@@ -168,6 +168,11 @@ var PrecompiledContractsOsaka = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x10}): &bls12381MapG1{},
 	common.BytesToAddress([]byte{0x11}): &bls12381MapG2{},
 
+	// Privacy precompiles (Ethereum Privacy roadmap, Phase 1 sealed amounts /
+	// Phase 3 privacy precompiles): additively-homomorphic Pedersen commitments.
+	common.BytesToAddress([]byte{0x12}): &pedersenCommit{},
+	common.BytesToAddress([]byte{0x13}): &pedersenAdd{},
+
 	common.BytesToAddress([]byte{0x1, 0x00}): &p256Verify{},
 }
 

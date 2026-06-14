@@ -172,6 +172,14 @@ const (
 
 	P256VerifyGas uint64 = 6900 // secp256r1 elliptic curve signature verifier gas price
 
+	// Privacy precompiles (see core/vm/contracts_privacy.go). These back the
+	// Phase 1 "sealed amounts" / Phase 3 "privacy precompiles" items of the
+	// Ethereum Privacy roadmap by exposing additively-homomorphic Pedersen
+	// commitments on-chain at a fraction of the cost of an equivalent EVM
+	// implementation. Costs are modelled on the comparable bn256 G1 operations.
+	PedersenCommitGas uint64 = 12000 // Price for computing a bn256 Pedersen commitment v*G + r*H
+	PedersenAddGas    uint64 = 600   // Price for a homomorphic addition of two commitments
+
 	// The Refund Quotient is the cap on how much of the used gas can be refunded. Before EIP-3529,
 	// up to half the consumed gas could be refunded. Redefined as 1/5th in EIP-3529
 	RefundQuotient        uint64 = 2
