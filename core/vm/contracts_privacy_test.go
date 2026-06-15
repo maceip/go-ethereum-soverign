@@ -28,6 +28,7 @@ import (
 	"github.com/consensys/gnark/test/unsafekzg"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/privacy"
+	"github.com/ethereum/go-ethereum/params"
 )
 
 // padScalar left-pads a big.Int to a 32-byte big-endian slice.
@@ -82,14 +83,53 @@ func TestPedersenCommitPrecompileBadInput(t *testing.T) {
 	}
 }
 
-// TestPrivacyPrecompilesRegistered ensures the precompiles are live in the Osaka
-// fork at the documented addresses.
-func TestPrivacyPrecompilesRegistered(t *testing.T) {
-	set := PrecompiledContractsOsaka
-	for _, addr := range []byte{0x12, 0x13, 0x14} {
-		if _, ok := set[common.BytesToAddress([]byte{addr})]; !ok {
-			t.Fatalf("privacy precompile not registered at 0x%x in Osaka set", addr)
+// TestPrivacyPrecompilesGatedByPrivacy1 ensures the privacy precompiles are NOT
+// active on a plain Osaka chain and only become active once Privacy1 is enabled.
+// This guards against the precompiles silently changing consensus on any Osaka
+// chain regardless of the Privacy1 fork.
+func TestPrivacyPrecompilesGatedByPrivacy1(t *testing.T) {
+	privacyAddrs := []common.Address{
+		common.BytesToAddress([]byte{0x12}),
+		common.BytesToAddress([]byte{0x13}),
+		common.BytesToAddress([]byte{0x14}),
+	}
+
+	// Plain Osaka (no Privacy1): the precompiles must be absent.
+	osaka := params.Rules{IsMerge: true, IsShanghai: true, IsCancun: true, IsPrague: true, IsOsaka: true}
+	for _, addr := range privacyAddrs {
+		if _, ok := activePrecompiledContracts(osaka)[addr]; ok {
+			t.Fatalf("privacy precompile %x active on plain Osaka (no Privacy1)", addr)
 		}
+	}
+	// Osaka was unchanged: the static set must not contain them either.
+	for _, addr := range privacyAddrs {
+		if _, ok := PrecompiledContractsOsaka[addr]; ok {
+			t.Fatalf("privacy precompile %x leaked into the static Osaka set", addr)
+		}
+	}
+
+	// With Privacy1 active, the precompiles must be present (overlaid on Osaka).
+	priv := osaka
+	priv.IsPrivacy1 = true
+	for _, addr := range privacyAddrs {
+		if _, ok := activePrecompiledContracts(priv)[addr]; !ok {
+			t.Fatalf("privacy precompile %x not active under Privacy1", addr)
+		}
+	}
+	// And the base Osaka precompiles must still be present under Privacy1.
+	if _, ok := activePrecompiledContracts(priv)[common.BytesToAddress([]byte{0x01})]; !ok {
+		t.Fatal("base precompiles missing from the Privacy1 overlay set")
+	}
+
+	// Privacy1 also works overlaid on a Prague-but-not-Osaka chain.
+	pragueOnly := params.Rules{IsMerge: true, IsShanghai: true, IsCancun: true, IsPrague: true, IsPrivacy1: true}
+	for _, addr := range privacyAddrs {
+		if _, ok := activePrecompiledContracts(pragueOnly)[addr]; !ok {
+			t.Fatalf("privacy precompile %x not active under Privacy1+Prague", addr)
+		}
+	}
+	if _, ok := activePrecompiledContracts(pragueOnly)[common.BytesToAddress([]byte{0x1, 0x00})]; ok {
+		t.Fatal("Osaka-only precompile (p256verify) leaked onto a Prague+Privacy1 chain")
 	}
 }
 

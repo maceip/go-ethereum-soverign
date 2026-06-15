@@ -840,8 +840,13 @@ func (c *ChainConfig) IsOsaka(num *big.Int, time uint64) bool {
 // IsPrivacy1 returns whether time is either equal to the Privacy Phase 1 fork time
 // or greater. Privacy Phase 1 enables confidential ETH (shielded) transactions and
 // the protocol-native shielded pool.
+//
+// Privacy1 requires Prague: the ShieldedTx type reuses the modern (Prague) signer's
+// signature scheme, so activating Privacy1 before Prague would let the rules admit
+// shielded transactions that the signer rejects. Gating on Prague keeps the two in
+// lock-step.
 func (c *ChainConfig) IsPrivacy1(num *big.Int, time uint64) bool {
-	return c.IsLondon(num) && isTimestampForked(c.Privacy1Time, time)
+	return c.IsPrague(num, time) && isTimestampForked(c.Privacy1Time, time)
 }
 
 // IsBPO1 returns whether time is either equal to the BPO1 fork time or greater.

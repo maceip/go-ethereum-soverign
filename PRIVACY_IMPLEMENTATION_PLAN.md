@@ -4,7 +4,7 @@ This document maps the five-phase research roadmap *"Ethereum Privacy: The Road 
 Self-Sovereignty"* onto **three concrete, buildable engineering phases** for this
 go-ethereum client. It builds directly on the foundation already merged to `master`
 (see [`PRIVACY_ROADMAP.md`](PRIVACY_ROADMAP.md)): Pedersen commitments, EIP-5564
-stealth addresses, Dandelion++ routing, the shielded-pool primitives, and the
+stealth addresses, the shielded-pool primitives, and the
 `PEDERSEN_COMMIT`/`PEDERSEN_ADD` precompiles.
 
 Each engineering phase is independently shippable, gated behind a hard fork so
@@ -133,7 +133,7 @@ devnet verify each other's proofs.
 | EIP-5564 stealth addresses | Real; now hashes the compressed point per EIP-5564 (was x-coordinate only) |
 | Pedersen commitments + `PEDERSEN_COMMIT/ADD`/`PLONK_VERIFY` precompiles | Real, general-purpose; **not** load-bearing for the shielded flow (which uses MiMC + a direct verifier) |
 | Trusted setup | **Deterministic but insecure** (public seed); a real ceremony is the one remaining production blocker |
-| Dandelion++ (`p2p/dandelion`) | Real routing logic, **not wired** into the p2p broadcast path (opt-in module) |
+| Network-origin privacy (Dandelion++) | **Not implemented.** A standalone routing module was removed rather than shipped unwired; integrating it correctly needs tx-locality plumbing and a multi-node propagation test harness (Phase 2 work). |
 | Gas costs for shielded ops / precompiles | Real charging, **placeholder values** pending benchmarking |
 
 ### How a shielded transaction is processed (implemented)
@@ -185,18 +185,20 @@ independent of Phase 1.
 
 ### Workstreams
 
-1. **Dandelion++ wiring (Roadmap Ph.1 §3).**
-   - Integrate the merged `p2p/dandelion.Router` into `eth/handler.go`
-     `BroadcastTransactions` (`:452`), behind a `--privacy.dandelion` flag.
-   - Stem locally-originated txs to the per-epoch successor; fall back to diffusion
-     for received txs already in fluff. Run the embargo loop in `txBroadcastLoop`
-     (`:508`); call `MarkFluffed` when a tx arrives via normal gossip.
-   - Feed `SetPeers` from the peer set on connect/disconnect.
+1. **Dandelion++ network-origin privacy (Roadmap Ph.1 §3).**
+   - Build a stem/fluff router and integrate it into `eth/handler.go`
+     `BroadcastTransactions`, behind a flag. Requires first surfacing tx locality
+     (the current `core.NewTxsEvent` carries no origin flag) so that only
+     locally-originated transactions are stemmed; relayed transactions must keep
+     diffusing.
+   - Run an embargo failsafe; mark transactions fluffed when seen via normal gossip.
+   - **Must be validated on a multi-node propagation test harness** before landing —
+     a single-process unit test cannot demonstrate the source-obfuscation property,
+     and a half-wired version provides no real privacy.
 
 2. **Encrypted mempool (Roadmap Ph.1 §2, Ph.4 §3).**
    - Commit-reveal first: peers gossip a commitment to the tx; the payload is
-     revealed only at/after inclusion. New `p2p/dandelion`-adjacent package
-     `core/txpool/encrypted/`.
+     revealed only at/after inclusion.
    - Then threshold encryption: txs encrypted to a validator-set key, decrypted on
      inclusion via a threshold scheme (Shamir). Inspired by Shutter Network. This
      is the largest sub-project; stage it behind commit-reveal.

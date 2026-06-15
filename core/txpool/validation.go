@@ -284,6 +284,13 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 		balance = opts.State.GetBalance(from).ToBig()
 		cost    = tx.Cost()
 	)
+	// A confidential (shielded) deposit debits abs(ValueBalance) from the fee payer
+	// during settlement, but tx.Cost() reports the transparent value as zero. Add
+	// the shield amount here so underfunded shield deposits are rejected at
+	// admission rather than entering the pool only to fail during execution.
+	if vb := tx.ShieldedValueBalance(); vb != nil && vb.Sign() < 0 {
+		cost = new(big.Int).Add(cost, new(big.Int).Neg(vb))
+	}
 	if balance.Cmp(cost) < 0 {
 		return fmt.Errorf("%w: balance %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, cost, new(big.Int).Sub(cost, balance))
 	}

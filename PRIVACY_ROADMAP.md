@@ -15,10 +15,13 @@ infrastructure the later phases compose on top of.
 | --- | --- | --- |
 | **Sealed amounts** — additively-homomorphic Pedersen commitments to hide values while proving balance conservation | 1 | [`core/privacy/pedersen.go`](core/privacy/pedersen.go) |
 | **Native stealth addresses** (EIP-5564) — unlinkable one-time recipient addresses with view-tag scanning | 1 | [`core/privacy/stealth.go`](core/privacy/stealth.go) |
-| **Network-level anonymity via Dandelion++** — stem/fluff transaction propagation with per-epoch successor rotation and embargo failsafe | 1 | [`p2p/dandelion/dandelion.go`](p2p/dandelion/dandelion.go) |
-| **UX & wallet integration** — `privacy` JSON-RPC namespace for stealth-address generation/detection and commitments | 1 | [`eth/privacy_api.go`](eth/privacy_api.go) |
-| **Privacy precompiles** — `PEDERSEN_COMMIT` (`0x12`) and `PEDERSEN_ADD` (`0x13`) to make confidential-value bookkeeping economical on L1 | 3 | [`core/vm/contracts_privacy.go`](core/vm/contracts_privacy.go) |
+| **UX & wallet integration** — `privacy` JSON-RPC namespace (pool introspection, shield builder, stealth/commitment helpers) | 1 | [`eth/privacy_api.go`](eth/privacy_api.go) |
+| **Privacy precompiles** — `PEDERSEN_COMMIT` (`0x12`), `PEDERSEN_ADD` (`0x13`), `PLONK_VERIFY` (`0x14`), gated by the Privacy1 fork | 3 | [`core/vm/contracts_privacy.go`](core/vm/contracts_privacy.go) |
 | **Shielded-pool primitives** — incremental Merkle commitment tree + nullifier set for double-spend prevention | 2 / 4 | [`core/privacy/shieldedpool.go`](core/privacy/shieldedpool.go) |
+
+> Network-origin privacy (Dandelion++) is **not implemented**. An earlier
+> standalone routing module was removed rather than shipped unwired; see
+> [`PRIVACY_IMPLEMENTATION_PLAN.md`](PRIVACY_IMPLEMENTATION_PLAN.md).
 
 ## Design notes
 
@@ -27,20 +30,11 @@ infrastructure the later phases compose on top of.
   encoding and the `PEDERSEN_ADD` result is directly consumable by other bn256
   precompiles. The second generator `H` is derived nothing-up-my-sleeve by hashing
   the canonical encoding of `G` into the group.
-- The two precompiles are registered only in the **Osaka** precompile set, so
-  pre-Osaka consensus behaviour is unchanged. Generic Groth16/PlonK verification is
-  already available through the existing bn256 pairing precompile (`0x08`); the new
-  precompiles add the fused commitment + homomorphic-add operations a
-  confidential-value scheme needs and which are expensive to express in EVM
-  bytecode.
-- **Dandelion++** is implemented as transport-agnostic routing logic with an
-  injectable clock and RNG so it is deterministically testable. It is intentionally
-  *not* wired into default transaction propagation, because changing the gossip
-  path is a consensus-adjacent networking change that needs its own review and an
-  opt-in flag; the `Router` exposes exactly the `Relay`/`Broadcast`/embargo hooks a
-  caller needs to integrate it into `eth/handler.go`.
-- The `privacy` RPC namespace is **stateless** — it never holds keys, touches chain
-  state, or signs — making it safe for wallet tooling to consume.
+- The privacy precompiles are gated by the **Privacy1 fork** (`rules.IsPrivacy1`),
+  overlaid on the active base fork's precompile set. A chain that has not activated
+  Privacy1 is byte-for-byte unaffected.
+- The `privacy` RPC namespace never holds private keys and never signs:
+  `BuildShield` returns an *unsigned* transaction for the caller to sign and submit.
 
 ## Not yet implemented (later roadmap phases)
 
@@ -54,6 +48,6 @@ ordering (Phase 4), and post-quantum migration (Phase 5).
 ## Tests
 
 ```
-go test ./core/privacy/ ./p2p/dandelion/ ./core/vm/ -run 'Test'
+go test ./core/privacy/... ./core/vm/ -run 'Test'
 go test ./eth/ -run 'TestPrivacyAPI'
 ```

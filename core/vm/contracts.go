@@ -168,14 +168,18 @@ var PrecompiledContractsOsaka = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x10}): &bls12381MapG1{},
 	common.BytesToAddress([]byte{0x11}): &bls12381MapG2{},
 
-	// Privacy precompiles (Ethereum Privacy roadmap, Phase 1 sealed amounts /
-	// Phase 3 privacy precompiles): additively-homomorphic Pedersen commitments
-	// and PlonK (BN254) zero-knowledge proof verification.
+	common.BytesToAddress([]byte{0x1, 0x00}): &p256Verify{},
+}
+
+// PrecompiledContractsPrivacy1 contains the privacy precompiles introduced by the
+// Privacy Phase 1 fork (Ethereum Privacy roadmap). They are additive: when
+// Privacy1 is active they are overlaid on top of the base fork's precompile set
+// (see activePrecompiledContracts). They are NOT part of the Osaka set, so a chain
+// that has not activated Privacy1 is unaffected.
+var PrecompiledContractsPrivacy1 = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x12}): &pedersenCommit{},
 	common.BytesToAddress([]byte{0x13}): &pedersenAdd{},
 	common.BytesToAddress([]byte{0x14}): &plonkVerify{},
-
-	common.BytesToAddress([]byte{0x1, 0x00}): &p256Verify{},
 }
 
 // PrecompiledContractsP256Verify contains the precompiled Ethereum
@@ -185,13 +189,24 @@ var PrecompiledContractsP256Verify = PrecompiledContracts{
 }
 
 var (
-	PrecompiledAddressesOsaka     []common.Address
-	PrecompiledAddressesPrague    []common.Address
-	PrecompiledAddressesCancun    []common.Address
-	PrecompiledAddressesBerlin    []common.Address
-	PrecompiledAddressesIstanbul  []common.Address
-	PrecompiledAddressesByzantium []common.Address
-	PrecompiledAddressesHomestead []common.Address
+	PrecompiledAddressesOsaka          []common.Address
+	PrecompiledAddressesPrague         []common.Address
+	PrecompiledAddressesCancun         []common.Address
+	PrecompiledAddressesBerlin         []common.Address
+	PrecompiledAddressesIstanbul       []common.Address
+	PrecompiledAddressesByzantium      []common.Address
+	PrecompiledAddressesHomestead      []common.Address
+	PrecompiledAddressesPrivacy1Prague []common.Address
+	PrecompiledAddressesPrivacy1Osaka  []common.Address
+)
+
+// PrecompiledContractsPrivacy1Prague and PrecompiledContractsPrivacy1Osaka are the
+// base Prague/Osaka precompile sets with the Privacy Phase 1 precompiles overlaid.
+// Privacy1 requires Prague (see ChainConfig.IsPrivacy1), so these two cover every
+// Privacy1-active configuration.
+var (
+	PrecompiledContractsPrivacy1Prague PrecompiledContracts
+	PrecompiledContractsPrivacy1Osaka  PrecompiledContracts
 )
 
 func init() {
@@ -216,12 +231,36 @@ func init() {
 	for k := range PrecompiledContractsOsaka {
 		PrecompiledAddressesOsaka = append(PrecompiledAddressesOsaka, k)
 	}
+
+	// Build the Privacy1 overlays and their address lists.
+	PrecompiledContractsPrivacy1Prague = mergePrecompiles(PrecompiledContractsPrague, PrecompiledContractsPrivacy1)
+	PrecompiledContractsPrivacy1Osaka = mergePrecompiles(PrecompiledContractsOsaka, PrecompiledContractsPrivacy1)
+	for k := range PrecompiledContractsPrivacy1Prague {
+		PrecompiledAddressesPrivacy1Prague = append(PrecompiledAddressesPrivacy1Prague, k)
+	}
+	for k := range PrecompiledContractsPrivacy1Osaka {
+		PrecompiledAddressesPrivacy1Osaka = append(PrecompiledAddressesPrivacy1Osaka, k)
+	}
+}
+
+// mergePrecompiles returns a new set containing base plus overlay.
+func mergePrecompiles(base, overlay PrecompiledContracts) PrecompiledContracts {
+	out := maps.Clone(base)
+	for addr, c := range overlay {
+		out[addr] = c
+	}
+	return out
 }
 
 func activePrecompiledContracts(rules params.Rules) PrecompiledContracts {
 	switch {
 	case rules.IsUBT:
 		return PrecompiledContractsVerkle
+	case rules.IsPrivacy1 && rules.IsOsaka:
+		return PrecompiledContractsPrivacy1Osaka
+	case rules.IsPrivacy1:
+		// IsPrivacy1 implies IsPrague (see ChainConfig.IsPrivacy1).
+		return PrecompiledContractsPrivacy1Prague
 	case rules.IsOsaka:
 		return PrecompiledContractsOsaka
 	case rules.IsPrague:
@@ -247,6 +286,10 @@ func ActivePrecompiledContracts(rules params.Rules) PrecompiledContracts {
 // ActivePrecompiles returns the precompile addresses enabled with the current configuration.
 func ActivePrecompiles(rules params.Rules) []common.Address {
 	switch {
+	case rules.IsPrivacy1 && rules.IsOsaka:
+		return PrecompiledAddressesPrivacy1Osaka
+	case rules.IsPrivacy1:
+		return PrecompiledAddressesPrivacy1Prague
 	case rules.IsOsaka:
 		return PrecompiledAddressesOsaka
 	case rules.IsPrague:

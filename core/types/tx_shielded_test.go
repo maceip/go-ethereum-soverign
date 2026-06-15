@@ -118,3 +118,28 @@ func TestShieldedTxCopy(t *testing.T) {
 		t.Fatal("copy shares Nullifiers slice with original")
 	}
 }
+
+// TestShieldedTxSignerActivation checks that ShieldedTx is accepted by the modern
+// signer from Prague onward (matching the Privacy1>=Prague rule) and rejected by a
+// pre-Prague signer, so the rules and the signer can never disagree.
+func TestShieldedTxSignerActivation(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	tx := NewTx(sampleShieldedTx())
+
+	// Pre-Prague (London) signer must not support the shielded type.
+	if _, err := SignTx(tx, NewLondonSigner(big.NewInt(1)), key); err != ErrTxTypeNotSupported {
+		t.Fatalf("London signer: got %v, want ErrTxTypeNotSupported", err)
+	}
+	// Prague signer must support it and recover the sender.
+	signed, err := SignTx(tx, NewPragueSigner(big.NewInt(1)), key)
+	if err != nil {
+		t.Fatalf("Prague signer rejected shielded tx: %v", err)
+	}
+	from, err := Sender(NewPragueSigner(big.NewInt(1)), signed)
+	if err != nil {
+		t.Fatalf("Sender: %v", err)
+	}
+	if from != crypto.PubkeyToAddress(key.PublicKey) {
+		t.Fatal("recovered wrong sender")
+	}
+}

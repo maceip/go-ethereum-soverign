@@ -40,6 +40,11 @@ func EnablePrivacyDevnet(gspec *Genesis) error {
 		return err
 	}
 	zero := uint64(0)
+	// Privacy1 requires Prague (see ChainConfig.IsPrivacy1); ensure it is active so
+	// enabling privacy can never be a silent no-op on a pre-Prague genesis.
+	if gspec.Config.PragueTime == nil {
+		gspec.Config.PragueTime = &zero
+	}
 	gspec.Config.Privacy1Time = &zero
 
 	if gspec.Alloc == nil {

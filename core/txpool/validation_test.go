@@ -25,10 +25,71 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/holiman/uint256"
 )
+
+// TestValidateShieldedDepositFunding checks that a shielded deposit (a shield with
+// negative ValueBalance) is rejected at txpool admission when the fee payer cannot
+// cover the deposit amount, even though the transaction's transparent value is
+// zero. Otherwise underfunded shields would enter and propagate through the pool
+// only to fail during execution.
+func TestValidateShieldedDepositFunding(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	from := crypto.PubkeyToAddress(key.PublicKey)
+	signer := types.LatestSigner(params.MergedTestChainConfig)
+
+	mkShield := func(deposit *big.Int) *types.Transaction {
+		tx, err := types.SignTx(types.NewTx(&types.ShieldedTx{
+			ChainID:      params.MergedTestChainConfig.ChainID,
+			Nonce:        0,
+			GasTipCap:    big.NewInt(0),
+			GasFeeCap:    big.NewInt(0),
+			Gas:          1_000_000,
+			Anchor:       common.Hash{},
+			Nullifiers:   []common.Hash{{1}, {2}},
+			Commitments:  []common.Hash{{3}, {4}},
+			ValueBalance: new(big.Int).Neg(deposit), // negative => shield
+			Proof:        []byte{0x01},
+		}), signer, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tx
+	}
+
+	newState := func(balanceEth int64) *state.StateDB {
+		sdb, err := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+		if err != nil {
+			t.Fatal(err)
+		}
+		bal := new(uint256.Int).Mul(uint256.NewInt(uint64(balanceEth)), uint256.NewInt(params.Ether))
+		sdb.AddBalance(from, bal, 0)
+		return sdb
+	}
+
+	opts := func(sdb *state.StateDB) *ValidationOptionsWithState {
+		return &ValidationOptionsWithState{
+			State:               sdb,
+			ExistingExpenditure: func(common.Address) *big.Int { return new(big.Int) },
+			ExistingCost:        func(common.Address, uint64) *big.Int { return nil },
+		}
+	}
+
+	deposit := new(big.Int).Mul(big.NewInt(10), big.NewInt(params.Ether))
+
+	// Underfunded: 5 ETH balance, 10 ETH shield deposit -> must be rejected.
+	if err := ValidateTransactionWithState(mkShield(deposit), signer, opts(newState(5))); !errors.Is(err, core.ErrInsufficientFunds) {
+		t.Fatalf("underfunded shield: got %v, want ErrInsufficientFunds", err)
+	}
+	// Funded: 100 ETH balance -> must be accepted.
+	if err := ValidateTransactionWithState(mkShield(deposit), signer, opts(newState(100))); err != nil {
+		t.Fatalf("funded shield rejected: %v", err)
+	}
+}
 
 func TestValidateTransactionEIP2681(t *testing.T) {
 	key, err := crypto.GenerateKey()

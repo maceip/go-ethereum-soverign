@@ -155,3 +155,34 @@ func TestTimestampCompatError(t *testing.T) {
 	require.Equal(t, newTimestampCompatError(errWhat, newUint64(0), newUint64(1681338455)).Error(),
 		"mismatching Shanghai fork timestamp in database (have timestamp 0, want timestamp 1681338455, rewindto timestamp 0)")
 }
+
+// TestIsPrivacy1RequiresPrague checks that Privacy Phase 1 can only activate on or
+// after Prague, so the rule that admits shielded transactions can never get ahead
+// of the (Prague) signer that recovers them.
+func TestIsPrivacy1RequiresPrague(t *testing.T) {
+	ts := uint64(1000)
+
+	// Privacy1Time set but Prague not configured: Privacy1 must stay inactive.
+	noPrague := &ChainConfig{
+		ChainID:      big.NewInt(1),
+		LondonBlock:  big.NewInt(0),
+		Privacy1Time: &ts,
+	}
+	if noPrague.IsPrivacy1(big.NewInt(0), ts+1) {
+		t.Fatal("Privacy1 active without Prague configured")
+	}
+
+	// Prague + Privacy1 both configured: active only at/after the fork time.
+	withPrague := &ChainConfig{
+		ChainID:      big.NewInt(1),
+		LondonBlock:  big.NewInt(0),
+		PragueTime:   newUint64(0),
+		Privacy1Time: &ts,
+	}
+	if withPrague.IsPrivacy1(big.NewInt(0), ts-1) {
+		t.Fatal("Privacy1 active before its fork time")
+	}
+	if !withPrague.IsPrivacy1(big.NewInt(0), ts) {
+		t.Fatal("Privacy1 not active at its fork time with Prague enabled")
+	}
+}
