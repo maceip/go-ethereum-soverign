@@ -100,7 +100,8 @@ a full sync of a third node. Unit + state tests green; `go test ./core/...`.
 | 2. State-backed shielded pool — incremental Merkle tree + nullifier set + recent-roots ring + VK registry, all in the state trie | ✅ **Done** — `core/privacy/pool` |
 | 4. Fork gating — `Privacy1Time` / `ChainConfig.IsPrivacy1` / `Rules.IsPrivacy1` | ✅ **Done** — `params/config.go` |
 | 1+2+4 integration — state-transition settlement (`settleShielded`) and txpool gating | ✅ **Done** — `core/state_transition.go`, `core/txpool/validation.go`; end-to-end shield→unshield→double-spend test |
-| 5. Production shielded-transfer circuit (Merkle membership + nullifier derivation + balance constraints) and trusted-setup ceremony | ⏳ Next — the consensus verification path is complete and tested against a stand-in circuit; the production circuit binds the same public digest |
+| 5. Production shielded-transfer circuit — 2-in/2-out MiMC circuit enforcing Merkle membership, nullifier derivation, commitment well-formedness, value conservation and range checks; native prover + wallet helpers | ✅ **Done** — `core/privacy/circuit`; soundness tests reject value inflation, forged nullifiers/commitments and non-member spends |
+| 5. Trusted-setup ceremony (real multi-party SRS) | ⏳ **Required before any value-bearing network** — only a devnet (insecure, in-process) SRS exists today, loudly labelled in `circuit.DevnetSetup` |
 | 5. RPC helpers (build/scan/prove shielded txs) and wallet UX | ⏳ Next |
 
 ### How a shielded transaction is processed (implemented)
@@ -109,17 +110,38 @@ a full sync of a third node. Unit + state tests green; `go test ./core/...`.
    normally; `value()` is always 0 — transparent value moves only via the pool.
 2. `settleShielded` (gated by `Rules.IsPrivacy1`):
    anchor must be a known recent pool root → nullifiers must be unspent & unique →
-   the PlonK proof must verify against the public digest of
-   `(anchor, nullifiers, commitments, valueBalance)` and the pool's installed
+   the PlonK proof must verify against the circuit's public inputs `(anchor,
+   nullifiers, output commitments, valueBalance)` and the pool's installed
    verifying key → nullifiers are consumed, commitments appended → the signed
    `ValueBalance` is settled (shield debits the sender into the pool; unshield
    releases from the pool to `To`).
 
-> **Circuit status.** The consensus *verification* is real and fully wired; tests
-> drive it with a real PlonK proof from a stand-in circuit that binds the public
-> digest. Shipping the production circuit (which additionally constrains Merkle
-> membership, nullifier derivation and value conservation behind that same digest)
-> plus its trusted setup is the remaining Phase 1 cryptography task.
+### Circuit (`core/privacy/circuit`)
+
+The `Transfer` circuit is a 2-input/2-output JoinSplit over MiMC (BN254) that
+constrains, in zero knowledge:
+
+- **Membership**: each non-dummy input note's commitment is a leaf under the
+  public `Anchor` (Merkle path verified with the same MiMC the consensus pool uses
+  — the pool tree was migrated from Keccak to MiMC so the two agree).
+- **Ownership + nullifier**: `nf = MiMC(ask, rho)` is correctly derived and equals
+  the revealed nullifier; only the spending-key holder can produce it.
+- **Commitment well-formedness**: each output commitment opens to its note.
+- **Value conservation**: `Σ inputs = Σ outputs + valueBalance`, with 128-bit range
+  checks that block field-wraparound "negative value" forgery.
+
+Soundness is tested directly: value inflation, forged nullifiers, forged output
+commitments and spends of non-member notes are all **unprovable**, and a valid
+proof does not validate a transaction whose public fields were altered.
+
+> **The one remaining caveat — trusted setup.** PlonK needs a universal SRS from a
+> multi-party ceremony. The only SRS available today is generated in-process by
+> `circuit.DevnetSetup` (gnark's `unsafekzg`); its toxic waste is known, so its
+> verifying key must **never** be installed on a value-bearing network — anyone
+> could forge proofs. This is now the sole blocker to production readiness for the
+> circuit, and it is loudly documented at the call site and on the pool's
+> `InstallVerifyingKey`. The circuit itself does not change when a real ceremony
+> replaces the SRS; only the keys do.
 
 ---
 

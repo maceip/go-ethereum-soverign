@@ -17,17 +17,11 @@
 package core
 
 import (
-	"bytes"
 	"math/big"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/backend/plonk"
-	"github.com/consensys/gnark/constraint"
-	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/frontend/cs/scs"
-	"github.com/consensys/gnark/test/unsafekzg"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/privacy/circuit"
 	"github.com/ethereum/go-ethereum/core/privacy/pool"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -36,76 +30,12 @@ import (
 	"github.com/holiman/uint256"
 )
 
-// digestCircuit is the stand-in shielded-transfer circuit used by these tests. It
-// has a single public input D (the public digest binding the transaction) and a
-// secret X, and asserts D == X. This exercises the full consensus verification
-// plumbing (digest reconstruction -> witness build -> PlonK verify) with a real
-// proof; the production circuit replaces the trivial constraint with Merkle
-// membership, nullifier derivation and value-conservation constraints over the
-// same public digest.
-type digestCircuit struct {
-	D frontend.Variable `gnark:",public"`
-	X frontend.Variable `gnark:",secret"`
-}
-
-func (c *digestCircuit) Define(api frontend.API) error {
-	api.AssertIsEqual(c.D, c.X)
-	return nil
-}
-
-// shieldedProver holds a one-time circuit setup so each test can cheaply produce a
-// proof binding a given public digest.
-type shieldedProver struct {
-	ccs   constraint.ConstraintSystem
-	pk    plonk.ProvingKey
-	vk    plonk.VerifyingKey
-	vkRaw []byte
-}
-
-func newShieldedProver(t *testing.T) *shieldedProver {
-	t.Helper()
-	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &digestCircuit{})
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	srs, srsLagrange, err := unsafekzg.NewSRS(ccs)
-	if err != nil {
-		t.Fatalf("srs: %v", err)
-	}
-	pk, vk, err := plonk.Setup(ccs, srs, srsLagrange)
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	var buf bytes.Buffer
-	if _, err := vk.WriteTo(&buf); err != nil {
-		t.Fatalf("vk encode: %v", err)
-	}
-	return &shieldedProver{ccs: ccs, pk: pk, vk: vk, vkRaw: buf.Bytes()}
-}
-
-// prove returns a serialized PlonK proof for the statement "public digest == d".
-func (p *shieldedProver) prove(t *testing.T, d *big.Int) []byte {
-	t.Helper()
-	full, err := frontend.NewWitness(&digestCircuit{D: d, X: d}, ecc.BN254.ScalarField())
-	if err != nil {
-		t.Fatalf("witness: %v", err)
-	}
-	proof, err := plonk.Prove(p.ccs, p.pk, full)
-	if err != nil {
-		t.Fatalf("prove: %v", err)
-	}
-	var buf bytes.Buffer
-	if _, err := proof.WriteTo(&buf); err != nil {
-		t.Fatalf("proof encode: %v", err)
-	}
-	return buf.Bytes()
-}
-
-// shieldedTestEnv bundles the state, EVM and config for driving ApplyMessage.
+// shieldedTestEnv bundles the state, EVM and config for driving ApplyMessage, plus
+// a prover-side Merkle tree mirroring the pool so we can build membership proofs.
 type shieldedTestEnv struct {
 	statedb *state.StateDB
 	evm     *vm.EVM
-	cfg     *params.ChainConfig
+	tree    *circuit.Tree
 }
 
 func newShieldedTestEnv(t *testing.T) *shieldedTestEnv {
@@ -132,22 +62,21 @@ func newShieldedTestEnv(t *testing.T) *shieldedTestEnv {
 		BaseFee:     big.NewInt(0),
 	}
 	evm := vm.NewEVM(blockCtx, statedb, &cfgCopy, vm.Config{})
-	return &shieldedTestEnv{statedb: statedb, evm: evm, cfg: &cfgCopy}
-}
-
-func hashByte(b byte) common.Hash {
-	var h common.Hash
-	h[0] = b
-	return h
+	return &shieldedTestEnv{statedb: statedb, evm: evm, tree: circuit.NewTree()}
 }
 
 func ether(n int64) *uint256.Int {
 	return new(uint256.Int).Mul(uint256.NewInt(uint64(n)), uint256.NewInt(params.Ether))
 }
 
+func wei(n int64) *big.Int {
+	return new(big.Int).Mul(big.NewInt(n), big.NewInt(params.Ether))
+}
+
 // applyShielded builds and applies a shielded message with zero gas price (so gas
-// is free and the test focuses on shielded settlement).
-func (env *shieldedTestEnv) applyShielded(t *testing.T, from common.Address, nonce uint64, to *common.Address, sd *ShieldedData) error {
+// is free and the test focuses on shielded settlement). On success it mirrors the
+// appended commitments into the prover tree.
+func (env *shieldedTestEnv) applyShielded(t *testing.T, from common.Address, nonce uint64, to *common.Address, anchor common.Hash, nullifiers, commitments []common.Hash, valueBalance *big.Int, proof []byte) error {
 	t.Helper()
 	msg := &Message{
 		From:      from,
@@ -158,131 +87,193 @@ func (env *shieldedTestEnv) applyShielded(t *testing.T, from common.Address, non
 		GasPrice:  new(uint256.Int),
 		GasFeeCap: new(uint256.Int),
 		GasTipCap: new(uint256.Int),
-		Shielded:  sd,
+		Shielded: &ShieldedData{
+			Anchor:       anchor,
+			Nullifiers:   nullifiers,
+			Commitments:  commitments,
+			ValueBalance: valueBalance,
+			Proof:        proof,
+		},
 	}
 	_, err := ApplyMessage(env.evm, msg, NewGasPool(10_000_000))
+	if err == nil {
+		for _, c := range commitments {
+			env.tree.Append(c)
+		}
+	}
 	return err
 }
 
-// TestShieldedLifecycle exercises shield -> unshield -> double-spend end to end
-// through ApplyMessage against a real StateDB.
-func TestShieldedLifecycle(t *testing.T) {
-	prover := newShieldedProver(t)
-	env := newShieldedTestEnv(t)
+// TestShieldedLifecycleRealCircuit drives shield -> transfer -> unshield ->
+// double-spend through ApplyMessage using REAL PlonK proofs from the production
+// shielded-transfer circuit. It is the end-to-end consensus test of Privacy
+// Phase 1.
+func TestShieldedLifecycleRealCircuit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping shielded circuit proving in -short mode")
+	}
+	vk, err := circuit.DevnetSetup()
+	if err != nil {
+		t.Fatalf("DevnetSetup: %v", err)
+	}
 
+	env := newShieldedTestEnv(t)
 	from := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	recipient := common.HexToAddress("0x2222222222222222222222222222222222222222")
 	env.statedb.AddBalance(from, ether(100), 0)
+	pool.New(env.statedb).InstallVerifyingKey(vk)
 
-	// Install the circuit verifying key into the shielded pool.
-	pool.New(env.statedb).InstallVerifyingKey(prover.vkRaw)
-
-	// --- Shield 10 ETH ---------------------------------------------------------
-	// Fresh pool: the anchor must be the empty/zero root.
-	commit1 := hashByte(0xc1)
-	shieldVB := new(big.Int).Neg(new(big.Int).Mul(big.NewInt(10), big.NewInt(params.Ether)))
-	shieldSD := &ShieldedData{
-		Anchor:       common.Hash{},
-		Nullifiers:   nil,
-		Commitments:  []common.Hash{commit1},
-		ValueBalance: shieldVB,
+	// --- Shield 10 ETH: create note A worth 10 ETH -----------------------------
+	noteA := circuit.RandomNote(wei(10))
+	anchor := pool.New(env.statedb).Root() // fresh pool root
+	asg, nfs, cms, err := circuit.BuildTransfer(
+		env.tree, anchor,
+		nil,
+		[]circuit.Output{{Value: wei(10), Apk: noteA.Apk(), Rho: noteA.Rho}},
+		wei(-10),
+	)
+	if err != nil {
+		t.Fatalf("BuildTransfer shield: %v", err)
 	}
-	shieldSD.Proof = prover.prove(t, pool.PublicDigest(shieldSD.Anchor, shieldSD.Nullifiers, shieldSD.Commitments, shieldSD.ValueBalance))
-
-	if err := env.applyShielded(t, from, 0, nil, shieldSD); err != nil {
+	proof, err := circuit.Prove(asg)
+	if err != nil {
+		t.Fatalf("Prove shield: %v", err)
+	}
+	if err := env.applyShielded(t, from, 0, nil, anchor, nfs, cms, wei(-10), proof); err != nil {
 		t.Fatalf("shield failed: %v", err)
 	}
 	if got := env.statedb.GetBalance(from); got.Cmp(ether(90)) != 0 {
-		t.Fatalf("after shield, sender balance = %v, want 90 ETH", got)
+		t.Fatalf("after shield, sender = %v, want 90 ETH", got)
 	}
 	if got := env.statedb.GetBalance(pool.SystemAddress); got.Cmp(ether(10)) != 0 {
-		t.Fatalf("after shield, pool balance = %v, want 10 ETH", got)
+		t.Fatalf("after shield, pool = %v, want 10 ETH", got)
 	}
-	p := pool.New(env.statedb)
-	if p.Leaves() != 1 {
-		t.Fatalf("after shield, pool leaves = %d, want 1", p.Leaves())
+	noteALeaf := uint64(0) // cms[0] (note A) was the first commitment appended
+
+	// --- Transfer: spend note A (10) -> note B (6) + note C (4) ----------------
+	noteB := circuit.RandomNote(wei(6))
+	noteC := circuit.RandomNote(wei(4))
+	anchor = pool.New(env.statedb).Root()
+	asg, nfs, cms, err = circuit.BuildTransfer(
+		env.tree, anchor,
+		[]circuit.Spend{{Note: noteA, LeafIndex: noteALeaf}},
+		[]circuit.Output{
+			{Value: wei(6), Apk: noteB.Apk(), Rho: noteB.Rho},
+			{Value: wei(4), Apk: noteC.Apk(), Rho: noteC.Rho},
+		},
+		big.NewInt(0), // pure shielded transfer
+	)
+	if err != nil {
+		t.Fatalf("BuildTransfer transfer: %v", err)
+	}
+	transferNullifiers := nfs
+	transferCommitments := cms
+	proof, err = circuit.Prove(asg)
+	if err != nil {
+		t.Fatalf("Prove transfer: %v", err)
+	}
+	noteBLeaf := pool.New(env.statedb).Leaves() // cms[0] (note B) index after this append
+	if err := env.applyShielded(t, from, 1, nil, anchor, nfs, cms, big.NewInt(0), proof); err != nil {
+		t.Fatalf("transfer failed: %v", err)
+	}
+	if got := env.statedb.GetBalance(pool.SystemAddress); got.Cmp(ether(10)) != 0 {
+		t.Fatalf("after transfer, pool = %v, want 10 ETH (unchanged)", got)
+	}
+	if !pool.New(env.statedb).IsNullifierSpent(transferNullifiers[0]) {
+		t.Fatal("note A nullifier not spent after transfer")
 	}
 
-	// --- Unshield 4 ETH to recipient ------------------------------------------
-	anchor := p.Root()
-	nullifier1 := hashByte(0x91)
-	commit2 := hashByte(0xc2)
-	unshieldVB := new(big.Int).Mul(big.NewInt(4), big.NewInt(params.Ether))
-	unshieldSD := &ShieldedData{
-		Anchor:       anchor,
-		Nullifiers:   []common.Hash{nullifier1},
-		Commitments:  []common.Hash{commit2},
-		ValueBalance: unshieldVB,
+	// --- Unshield 6 ETH: spend note B (6) -> recipient, no shielded outputs ----
+	anchor = pool.New(env.statedb).Root()
+	asg, nfs, cms, err = circuit.BuildTransfer(
+		env.tree, anchor,
+		[]circuit.Spend{{Note: noteB, LeafIndex: noteBLeaf}},
+		nil,    // both outputs are dummies (value 0)
+		wei(6), // unshield 6 ETH
+	)
+	if err != nil {
+		t.Fatalf("BuildTransfer unshield: %v", err)
 	}
-	unshieldSD.Proof = prover.prove(t, pool.PublicDigest(unshieldSD.Anchor, unshieldSD.Nullifiers, unshieldSD.Commitments, unshieldSD.ValueBalance))
-
-	if err := env.applyShielded(t, from, 1, &recipient, unshieldSD); err != nil {
+	proof, err = circuit.Prove(asg)
+	if err != nil {
+		t.Fatalf("Prove unshield: %v", err)
+	}
+	if err := env.applyShielded(t, from, 2, &recipient, anchor, nfs, cms, wei(6), proof); err != nil {
 		t.Fatalf("unshield failed: %v", err)
 	}
-	if got := env.statedb.GetBalance(recipient); got.Cmp(ether(4)) != 0 {
-		t.Fatalf("after unshield, recipient balance = %v, want 4 ETH", got)
+	if got := env.statedb.GetBalance(recipient); got.Cmp(ether(6)) != 0 {
+		t.Fatalf("after unshield, recipient = %v, want 6 ETH", got)
 	}
-	if got := env.statedb.GetBalance(pool.SystemAddress); got.Cmp(ether(6)) != 0 {
-		t.Fatalf("after unshield, pool balance = %v, want 6 ETH", got)
-	}
-	if !pool.New(env.statedb).IsNullifierSpent(nullifier1) {
-		t.Fatal("nullifier not marked spent after unshield")
+	if got := env.statedb.GetBalance(pool.SystemAddress); got.Cmp(ether(4)) != 0 {
+		t.Fatalf("after unshield, pool = %v, want 4 ETH", got)
 	}
 
-	// --- Double-spend the same nullifier --------------------------------------
-	anchor2 := pool.New(env.statedb).Root()
-	dsSD := &ShieldedData{
-		Anchor:       anchor2,
-		Nullifiers:   []common.Hash{nullifier1}, // reused
-		Commitments:  nil,
-		ValueBalance: big.NewInt(0),
-	}
-	dsSD.Proof = prover.prove(t, pool.PublicDigest(dsSD.Anchor, dsSD.Nullifiers, dsSD.Commitments, dsSD.ValueBalance))
-	if err := env.applyShielded(t, from, 2, nil, dsSD); err != ErrShieldedDoubleSpend {
+	// --- Double-spend: replay the transfer's nullifier -------------------------
+	// Reuse the transfer transaction verbatim; its first nullifier is already spent.
+	err = env.applyShielded(t, from, 3, nil, pool.New(env.statedb).Root(), transferNullifiers, transferCommitments, big.NewInt(0), proof)
+	if err != ErrShieldedDoubleSpend {
 		t.Fatalf("double spend: got %v, want ErrShieldedDoubleSpend", err)
 	}
+	_ = transferCommitments
 }
 
-// TestShieldedRejectsBadProof checks a proof bound to different fields is rejected.
-func TestShieldedRejectsBadProof(t *testing.T) {
-	prover := newShieldedProver(t)
+// TestShieldedRejectsTamperedTx checks that a valid proof does not validate a
+// transaction whose public fields were altered after proving (binding).
+func TestShieldedRejectsTamperedTx(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping shielded circuit proving in -short mode")
+	}
+	vk, err := circuit.DevnetSetup()
+	if err != nil {
+		t.Fatalf("DevnetSetup: %v", err)
+	}
 	env := newShieldedTestEnv(t)
-
 	from := common.HexToAddress("0x3333333333333333333333333333333333333333")
 	env.statedb.AddBalance(from, ether(100), 0)
-	pool.New(env.statedb).InstallVerifyingKey(prover.vkRaw)
+	pool.New(env.statedb).InstallVerifyingKey(vk)
 
-	sd := &ShieldedData{
-		Anchor:       common.Hash{},
-		Commitments:  []common.Hash{hashByte(0xaa)},
-		ValueBalance: new(big.Int).Neg(big.NewInt(params.Ether)),
+	noteA := circuit.RandomNote(wei(10))
+	anchor := pool.New(env.statedb).Root()
+	asg, nfs, cms, err := circuit.BuildTransfer(env.tree, anchor, nil,
+		[]circuit.Output{{Value: wei(10), Apk: noteA.Apk(), Rho: noteA.Rho}}, wei(-10))
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Prove a digest for a DIFFERENT commitment than the one in the transaction.
-	wrongDigest := pool.PublicDigest(sd.Anchor, sd.Nullifiers, []common.Hash{hashByte(0xbb)}, sd.ValueBalance)
-	sd.Proof = prover.prove(t, wrongDigest)
-
-	if err := env.applyShielded(t, from, 0, nil, sd); err != pool.ErrInvalidProof {
-		t.Fatalf("bad proof: got %v, want ErrInvalidProof", err)
+	proof, err := circuit.Prove(asg)
+	if err != nil {
+		t.Fatalf("Prove: %v", err)
+	}
+	// Tamper: replace an output commitment with an arbitrary value.
+	cms[0] = circuit.RandomField()
+	if err := env.applyShielded(t, from, 0, nil, anchor, nfs, cms, wei(-10), proof); err != pool.ErrInvalidProof {
+		t.Fatalf("tampered tx: got %v, want ErrInvalidProof", err)
 	}
 }
 
 // TestShieldedRejectsUnknownAnchor checks an anchor that is not a known root is
 // rejected before any proof work.
 func TestShieldedRejectsUnknownAnchor(t *testing.T) {
-	prover := newShieldedProver(t)
+	if testing.Short() {
+		t.Skip("skipping shielded circuit proving in -short mode")
+	}
+	vk, err := circuit.DevnetSetup()
+	if err != nil {
+		t.Fatalf("DevnetSetup: %v", err)
+	}
 	env := newShieldedTestEnv(t)
-
 	from := common.HexToAddress("0x4444444444444444444444444444444444444444")
 	env.statedb.AddBalance(from, ether(100), 0)
-	pool.New(env.statedb).InstallVerifyingKey(prover.vkRaw)
+	pool.New(env.statedb).InstallVerifyingKey(vk)
 
-	sd := &ShieldedData{
-		Anchor:       hashByte(0xde), // not a known root on a fresh pool
-		Commitments:  []common.Hash{hashByte(0xaa)},
-		ValueBalance: new(big.Int).Neg(big.NewInt(params.Ether)),
+	noteA := circuit.RandomNote(wei(10))
+	bogusAnchor := circuit.RandomField()
+	asg, nfs, cms, err := circuit.BuildTransfer(env.tree, bogusAnchor, nil,
+		[]circuit.Output{{Value: wei(10), Apk: noteA.Apk(), Rho: noteA.Rho}}, wei(-10))
+	if err != nil {
+		t.Fatal(err)
 	}
-	sd.Proof = prover.prove(t, pool.PublicDigest(sd.Anchor, sd.Nullifiers, sd.Commitments, sd.ValueBalance))
-	if err := env.applyShielded(t, from, 0, nil, sd); err != ErrShieldedUnknownAnchor {
+	proof, _ := circuit.Prove(asg)
+	if err := env.applyShielded(t, from, 0, nil, bogusAnchor, nfs, cms, wei(-10), proof); err != ErrShieldedUnknownAnchor {
 		t.Fatalf("unknown anchor: got %v, want ErrShieldedUnknownAnchor", err)
 	}
 }

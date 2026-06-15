@@ -39,8 +39,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/privacy"
+	"github.com/ethereum/go-ethereum/core/privacy/circuit"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// TreeDepth is the depth of the note-commitment tree. It is sourced from the
+// circuit so the consensus tree and the zero-knowledge membership proof always
+// agree.
+const TreeDepth = circuit.MerkleDepth
 
 // SystemAddress is the reserved account whose storage holds the shielded pool
 // state. It is outside the range an EOA or normal contract can control.
@@ -136,7 +142,7 @@ func (p *Pool) IsKnownRoot(anchor common.Hash) bool {
 // or privacy.ErrTreeFull if the tree is at capacity.
 func (p *Pool) AppendCommitment(commitment common.Hash) (uint64, common.Hash, error) {
 	m := p.meta()
-	if m.leaves >= uint64(1)<<privacy.TreeDepth {
+	if m.leaves >= uint64(1)<<TreeDepth {
 		return 0, common.Hash{}, privacy.ErrTreeFull
 	}
 
@@ -146,7 +152,7 @@ func (p *Pool) AppendCommitment(commitment common.Hash) (uint64, common.Hash, er
 	cur := commitment
 	idx := index
 	zeros := emptySubtreeHashes()
-	for level := uint(0); level < privacy.TreeDepth; level++ {
+	for level := uint(0); level < TreeDepth; level++ {
 		if idx%2 == 0 {
 			p.setFrontier(level, cur)
 			cur = hashPair(cur, zeros[level])
@@ -216,20 +222,17 @@ func (p *Pool) nullifierSlot(nullifier common.Hash) common.Hash {
 
 // --- slot/hash helpers ---------------------------------------------------------
 
+// hashPair is the Merkle node hash. It delegates to the circuit's MiMC
+// construction so the consensus tree root matches what the zero-knowledge
+// membership proof computes.
 func hashPair(left, right common.Hash) common.Hash {
-	var out common.Hash
-	copy(out[:], crypto.Keccak256(left[:], right[:]))
-	return out
+	return circuit.HashTwo(left, right)
 }
 
-// emptySubtreeHashes returns the hash of an empty subtree at each level, matching
-// privacy.IncrementalMerkleTree's zero hashes so roots are interoperable.
+// emptySubtreeHashes returns the hash of an empty subtree at each level, using the
+// same MiMC construction as the circuit so roots are interoperable.
 func emptySubtreeHashes() []common.Hash {
-	zeros := make([]common.Hash, privacy.TreeDepth+1)
-	for i := uint(0); i < privacy.TreeDepth; i++ {
-		zeros[i+1] = hashPair(zeros[i], zeros[i])
-	}
-	return zeros
+	return circuit.EmptySubtreeRoots(TreeDepth)
 }
 
 func indexedSlot(prefix []byte, i uint64) common.Hash {

@@ -21,21 +21,21 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/privacy/circuit"
 	"github.com/ethereum/go-ethereum/core/privacy/zk"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // This file implements the consensus verification of a shielded transaction's
-// zero-knowledge proof. The shielded-transfer circuit proves, against a recent
-// commitment-tree root, that spent notes exist and are correctly nullified, that
-// the new commitments are well-formed, and that value is conserved. All of those
-// public statements are bound into a single field element — the "public digest" —
-// derived deterministically from the transaction's public fields. Consensus
-// recomputes that digest from the transaction it is validating and verifies the
-// PlonK proof against it, so a proof can only validate for the exact (anchor,
-// nullifiers, commitments, valueBalance) tuple it was generated for.
+// zero-knowledge proof. The shielded-transfer circuit (see core/privacy/circuit)
+// proves, against a recent commitment-tree root, that spent notes exist and are
+// correctly nullified, that the new commitments are well-formed, and that value is
+// conserved. Its public inputs are exactly the transaction's public fields —
+// anchor, nullifiers, output commitments and the (signed) value balance — so
+// consensus rebuilds that public witness from the transaction it is validating and
+// verifies the PlonK proof against it. A proof therefore only validates for the
+// precise transaction it was generated for.
 //
 // The verifying key of the canonical circuit is installed into the pool's system
 // account storage (e.g. at genesis), so it is part of consensus state and can be
@@ -47,19 +47,22 @@ var (
 	ErrNoVerifyingKey = errors.New("pool: no shielded verifying key installed")
 
 	// ErrInvalidProof is returned when a shielded transaction's proof fails to
-	// verify against the recomputed public digest.
+	// verify against its public inputs.
 	ErrInvalidProof = errors.New("pool: invalid shielded proof")
 )
 
 var (
-	slotVKLen      = crypto.Keccak256Hash([]byte("privacy/pool/vk/len"))
-	prefixVKChunk  = []byte("privacy/pool/vk/chunk")
-	bn254ScalarMod = ecc.BN254.ScalarField()
+	slotVKLen     = crypto.Keccak256Hash([]byte("privacy/pool/vk/len"))
+	prefixVKChunk = []byte("privacy/pool/vk/chunk")
 )
 
 // InstallVerifyingKey stores the shielded-transfer PlonK verifying key in the
 // pool's system-account storage. It is intended to be called from genesis
 // initialisation (or a governance-gated path), not from ordinary transactions.
+//
+// SECURITY: the verifying key must come from a real trusted-setup ceremony for any
+// value-bearing network. The devnet key produced by circuit.DevnetSetup uses an
+// in-process (insecure) SRS and must never be installed on such a network.
 func (p *Pool) InstallVerifyingKey(vk []byte) {
 	writeBlob(p.be, slotVKLen, prefixVKChunk, vk)
 }
@@ -69,50 +72,19 @@ func (p *Pool) VerifyingKey() []byte {
 	return readBlob(p.be, slotVKLen, prefixVKChunk)
 }
 
-// PublicDigest deterministically binds a shielded transaction's public fields into
-// a single BN254 scalar. Both the prover (off-chain) and the verifier (consensus)
-// must compute it identically, so it is the canonical definition of the circuit's
-// public input.
-func PublicDigest(anchor common.Hash, nullifiers, commitments []common.Hash, valueBalance *big.Int) *big.Int {
-	var preimage []byte
-	preimage = append(preimage, []byte("privacy/pool/publicDigest")...)
-	preimage = append(preimage, anchor[:]...)
-
-	var count [8]byte
-	binary.BigEndian.PutUint64(count[:], uint64(len(nullifiers)))
-	preimage = append(preimage, count[:]...)
-	for _, n := range nullifiers {
-		preimage = append(preimage, n[:]...)
-	}
-	binary.BigEndian.PutUint64(count[:], uint64(len(commitments)))
-	preimage = append(preimage, count[:]...)
-	for _, c := range commitments {
-		preimage = append(preimage, c[:]...)
-	}
-	// Encode the signed value balance as a sign byte followed by the magnitude, so
-	// shield/unshield/transfer produce distinct digests. Use a copy for the
-	// magnitude so the caller's value is never mutated.
-	vb := valueBalance
-	if vb == nil {
-		vb = new(big.Int)
-	}
-	preimage = append(preimage, byte(vb.Sign()&0xff))
-	preimage = append(preimage, new(big.Int).Abs(vb).Bytes()...)
-
-	d := new(big.Int).SetBytes(crypto.Keccak256(preimage))
-	return d.Mod(d, bn254ScalarMod)
-}
-
 // VerifyProof verifies a shielded transaction's proof against the installed
-// verifying key and the public digest of the supplied fields. It returns nil iff
-// the proof is valid.
+// verifying key and the transaction's public fields. It returns nil iff the proof
+// is valid for exactly those fields.
 func (p *Pool) VerifyProof(anchor common.Hash, nullifiers, commitments []common.Hash, valueBalance *big.Int, proof []byte) error {
 	vk := p.VerifyingKey()
 	if len(vk) == 0 {
 		return ErrNoVerifyingKey
 	}
-	digest := PublicDigest(anchor, nullifiers, commitments, valueBalance)
-	witnessBytes, err := zk.PublicWitnessBytes([]*big.Int{digest})
+	inputs, err := circuit.PublicInputs(anchor, nullifiers, commitments, valueBalance)
+	if err != nil {
+		return ErrInvalidProof
+	}
+	witnessBytes, err := zk.PublicWitnessBytes(inputs)
 	if err != nil {
 		return ErrInvalidProof
 	}

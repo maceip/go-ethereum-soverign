@@ -21,6 +21,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/privacy"
+	"github.com/ethereum/go-ethereum/core/privacy/circuit"
 )
 
 // mockBackend is an in-memory Backend keyed by storage slot. It ignores the
@@ -91,24 +92,23 @@ func TestAppendAdvancesRoot(t *testing.T) {
 	}
 }
 
-// TestRootMatchesInMemoryTree cross-checks the state-backed pool against the
-// in-memory privacy.IncrementalMerkleTree for a sequence of inserts: the roots
-// must match at every step (interoperable construction).
-func TestRootMatchesInMemoryTree(t *testing.T) {
+// TestRootMatchesProverTree cross-checks the state-backed pool against the
+// prover-side circuit.Tree for a sequence of inserts: the roots must match at
+// every step. This is the invariant that lets a wallet build membership proofs
+// that the consensus pool will accept.
+func TestRootMatchesProverTree(t *testing.T) {
 	p := New(newMockBackend())
-	ref := privacy.NewIncrementalMerkleTree()
+	ref := circuit.NewTree()
 
 	for i := 0; i < 20; i++ {
 		c := commitment(byte(i + 1))
-		if _, err := ref.Insert(c); err != nil {
-			t.Fatalf("ref insert: %v", err)
-		}
+		ref.Append(c)
 		_, root, err := p.AppendCommitment(c)
 		if err != nil {
 			t.Fatalf("pool append: %v", err)
 		}
 		if root != ref.Root() {
-			t.Fatalf("after %d inserts: pool root %x != in-memory root %x", i+1, root, ref.Root())
+			t.Fatalf("after %d inserts: pool root %x != prover-tree root %x", i+1, root, ref.Root())
 		}
 	}
 }
