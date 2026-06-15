@@ -230,6 +230,10 @@ func newModernSigner(chainID *big.Int, fork forks.Fork) Signer {
 	}
 	if fork >= forks.Prague {
 		s.txtypes.set(SetCodeTxType)
+		// ShieldedTx (Privacy Phase 1) reuses the standard secp256k1 fee-payer
+		// signature scheme, so the modern signer accepts it from Prague onward.
+		// Consensus activation is gated separately by ChainConfig.IsPrivacy1.
+		s.txtypes.set(ShieldedTxType)
 	}
 	return s
 }

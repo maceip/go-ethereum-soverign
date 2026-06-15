@@ -23,6 +23,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/privacy/pool"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -245,6 +246,23 @@ type Message struct {
 	// - From is not verified to be an EOA
 	// - GasLimit is not checked against the protocol defined tx gaslimit
 	SkipTransactionChecks bool
+
+	// Shielded carries the confidential-transaction payload for ShieldedTx
+	// messages (Privacy Phase 1). It is nil for all other transaction types; when
+	// non-nil the message performs a shielded-pool state transition instead of an
+	// EVM call.
+	Shielded *ShieldedData
+}
+
+// ShieldedData is the confidential payload of a ShieldedTx, lifted onto Message so
+// the state transition can settle it against the shielded pool. See
+// types.ShieldedTx for field semantics.
+type ShieldedData struct {
+	Anchor       common.Hash
+	Nullifiers   []common.Hash
+	Commitments  []common.Hash
+	ValueBalance *big.Int
+	Proof        []byte
 }
 
 // TransactionToMessage converts a transaction into a Message.
@@ -295,6 +313,16 @@ func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.In
 		SkipTransactionChecks: false,
 		BlobHashes:            tx.BlobHashes(),
 		BlobGasFeeCap:         blobGasFeeCap,
+	}
+	// Lift the shielded payload onto the message for confidential transactions.
+	if st, ok := tx.Shielded(); ok {
+		msg.Shielded = &ShieldedData{
+			Anchor:       st.Anchor,
+			Nullifiers:   st.Nullifiers,
+			Commitments:  st.Commitments,
+			ValueBalance: new(big.Int).Set(st.ValueBalance),
+			Proof:        st.Proof,
+		}
 	}
 	// If baseFee provided, set gasPrice to effectiveGasPrice.
 	if baseFee != nil {
@@ -680,7 +708,22 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		// per EIP-8037.
 		forwarded = st.gasRemaining.RegularGas
 	)
-	if contractCreation {
+	if msg.Shielded != nil {
+		// Confidential transaction (Privacy Phase 1): there is no EVM frame to
+		// execute. Charge for proof verification, bump the fee-payer nonce, then
+		// settle the transaction against the shielded pool. A settlement failure is
+		// a hard validation error (the transaction is invalid and must not be
+		// included), not a revertible VM error.
+		shieldedCost := params.ShieldedTxBaseGas +
+			uint64(len(msg.Shielded.Nullifiers)+len(msg.Shielded.Commitments))*params.ShieldedTxPerNoteGas
+		if _, sufficient := st.gasRemaining.ChargeRegular(shieldedCost); !sufficient {
+			return nil, fmt.Errorf("%w: shielded verification cost %d", ErrIntrinsicGas, shieldedCost)
+		}
+		st.state.SetNonce(msg.From, st.state.GetNonce(msg.From)+1, tracing.NonceChangeEoACall)
+		if err := st.settleShielded(rules); err != nil {
+			return nil, err
+		}
+	} else if contractCreation {
 		// Check whether the init code size has been exceeded.
 		if err := vm.CheckMaxInitCodeSize(&rules, uint64(len(msg.Data))); err != nil {
 			return nil, err
@@ -965,4 +1008,74 @@ func (st *stateTransition) calcRefund(gasUsedBeforeRefund uint64) uint64 {
 // blobGasUsed returns the amount of blob gas used by the message.
 func (st *stateTransition) blobGasUsed() uint64 {
 	return uint64(len(st.msg.BlobHashes) * params.BlobTxBlobGasPerBlob)
+}
+
+// settleShielded performs the state transition for a confidential (shielded)
+// transaction against the protocol-native shielded pool. It verifies the
+// transaction's zero-knowledge proof, enforces double-spend prevention via the
+// nullifier set, appends the new note commitments, and settles the transparent
+// value balance (shield/unshield). Any returned error is a hard validation
+// failure: the transaction is invalid and must not be included in a block.
+func (st *stateTransition) settleShielded(rules params.Rules) error {
+	if !rules.IsPrivacy1 {
+		return ErrShieldedInactive
+	}
+	sd := st.msg.Shielded
+	p := pool.New(st.state)
+
+	// 1. The anchor must be the current root or a recent root in the window.
+	if !p.IsKnownRoot(sd.Anchor) {
+		return ErrShieldedUnknownAnchor
+	}
+	// 2. Nullifiers must be unspent and unique within this transaction.
+	seen := make(map[common.Hash]struct{}, len(sd.Nullifiers))
+	for _, n := range sd.Nullifiers {
+		if _, dup := seen[n]; dup || p.IsNullifierSpent(n) {
+			return ErrShieldedDoubleSpend
+		}
+		seen[n] = struct{}{}
+	}
+	// 3. The proof must bind exactly these public fields.
+	if err := p.VerifyProof(sd.Anchor, sd.Nullifiers, sd.Commitments, sd.ValueBalance, sd.Proof); err != nil {
+		return err
+	}
+	// 4. Consume the spent notes and append the new commitments.
+	for _, n := range sd.Nullifiers {
+		if err := p.SpendNullifier(n); err != nil {
+			return err
+		}
+	}
+	for _, c := range sd.Commitments {
+		if _, _, err := p.AppendCommitment(c); err != nil {
+			return err
+		}
+	}
+	// 5. Settle the transparent value balance.
+	switch vb := sd.ValueBalance; vb.Sign() {
+	case -1: // shield: lock |vb| transparent ETH from the sender into the pool.
+		amt, overflow := uint256.FromBig(new(big.Int).Neg(vb))
+		if overflow {
+			return ErrShieldedValueOverflow
+		}
+		if st.state.GetBalance(st.msg.From).Cmp(amt) < 0 {
+			return ErrInsufficientFundsForTransfer
+		}
+		st.state.SubBalance(st.msg.From, amt, tracing.BalanceChangeTransfer)
+		st.state.AddBalance(pool.SystemAddress, amt, tracing.BalanceChangeTransfer)
+	case 1: // unshield: release vb transparent ETH from the pool to the recipient.
+		amt, overflow := uint256.FromBig(vb)
+		if overflow {
+			return ErrShieldedValueOverflow
+		}
+		if st.state.GetBalance(pool.SystemAddress).Cmp(amt) < 0 {
+			return ErrShieldedPoolInsufficient
+		}
+		recipient := pool.SystemAddress
+		if st.msg.To != nil {
+			recipient = *st.msg.To
+		}
+		st.state.SubBalance(pool.SystemAddress, amt, tracing.BalanceChangeTransfer)
+		st.state.AddBalance(recipient, amt, tracing.BalanceChangeTransfer)
+	}
+	return nil
 }

@@ -189,6 +189,13 @@ const (
 	PlonkVerifyBaseGas    uint64 = 250000 // Base price for a PlonK (BN254) proof verification
 	PlonkVerifyPerWordGas uint64 = 12     // Per-32-byte-word price of the verifier input
 
+	// Shielded (confidential ETH) transaction costs, Privacy Phase 1. The base
+	// cost covers the PlonK proof verification performed during settlement; the
+	// per-note cost covers nullifier lookups and incremental Merkle-tree updates.
+	// Devnet placeholders to be calibrated before any non-devnet activation.
+	ShieldedTxBaseGas    uint64 = 200000 // Base cost of a shielded transaction (proof verification)
+	ShieldedTxPerNoteGas uint64 = 8000   // Per input nullifier / output commitment cost
+
 	// The Refund Quotient is the cap on how much of the used gas can be refunded. Before EIP-3529,
 	// up to half the consumed gas could be refunded. Redefined as 1/5th in EIP-3529
 	RefundQuotient        uint64 = 2

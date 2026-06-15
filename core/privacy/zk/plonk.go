@@ -31,6 +31,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/plonk"
@@ -128,4 +129,29 @@ func VerifyEncoded(input []byte) (bool, error) {
 		return false, err
 	}
 	return VerifyPlonkBN254(vk, proof, pubWitness)
+}
+
+// PublicWitnessBytes builds a BN254 public witness from the given field values and
+// returns its gnark binary serialization. This lets consensus code reconstruct the
+// exact public inputs a proof must satisfy (e.g. a digest binding a shielded
+// transaction's contents) and verify the proof against them, without holding a
+// circuit definition.
+func PublicWitnessBytes(values []*big.Int) ([]byte, error) {
+	w, err := witness.New(ecc.BN254.ScalarField())
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan any, len(values))
+	for _, v := range values {
+		ch <- v
+	}
+	close(ch)
+	if err := w.Fill(len(values), 0, ch); err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if _, err := w.WriteTo(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

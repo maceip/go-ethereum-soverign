@@ -54,6 +54,15 @@ type txJSON struct {
 	Commitments []kzg4844.Commitment `json:"commitments,omitempty"`
 	Proofs      []kzg4844.Proof      `json:"proofs,omitempty"`
 
+	// Shielded transaction fields (Privacy Phase 1). ValueBalance is signed, so it
+	// is carried as a non-negative magnitude plus a sign flag.
+	Anchor          *common.Hash   `json:"anchor,omitempty"`
+	Nullifiers      []common.Hash  `json:"nullifiers,omitempty"`
+	NoteCommitments []common.Hash  `json:"noteCommitments,omitempty"`
+	ValueBalance    *hexutil.Big   `json:"valueBalance,omitempty"`
+	ValueBalanceNeg *bool          `json:"valueBalanceNeg,omitempty"`
+	ShieldedProof   *hexutil.Bytes `json:"shieldedProof,omitempty"`
+
 	// Only used for encoding:
 	Hash common.Hash `json:"hash"`
 }
@@ -170,6 +179,35 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 		enc.S = (*hexutil.Big)(itx.S.ToBig())
 		yparity := itx.V.Uint64()
 		enc.YParity = (*hexutil.Uint64)(&yparity)
+
+	case *ShieldedTx:
+		enc.ChainID = (*hexutil.Big)(itx.ChainID)
+		enc.Nonce = (*hexutil.Uint64)(&itx.Nonce)
+		enc.To = tx.To()
+		enc.Gas = (*hexutil.Uint64)(&itx.Gas)
+		enc.MaxFeePerGas = (*hexutil.Big)(itx.GasFeeCap)
+		enc.MaxPriorityFeePerGas = (*hexutil.Big)(itx.GasTipCap)
+		enc.Value = (*hexutil.Big)(new(big.Int)) // transparent value path is always zero
+		anchor := itx.Anchor
+		enc.Anchor = &anchor
+		enc.Nullifiers = itx.Nullifiers
+		enc.NoteCommitments = itx.Commitments
+		vb := itx.ValueBalance
+		if vb == nil {
+			vb = new(big.Int)
+		}
+		neg := vb.Sign() < 0
+		enc.ValueBalanceNeg = &neg
+		enc.ValueBalance = (*hexutil.Big)(new(big.Int).Abs(vb))
+		proof := hexutil.Bytes(itx.Proof)
+		enc.ShieldedProof = &proof
+		enc.V = (*hexutil.Big)(itx.V)
+		enc.R = (*hexutil.Big)(itx.R)
+		enc.S = (*hexutil.Big)(itx.S)
+		if itx.V != nil {
+			yparity := itx.V.Uint64()
+			enc.YParity = (*hexutil.Uint64)(&yparity)
+		}
 	}
 	return json.Marshal(&enc)
 }
@@ -506,6 +544,67 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 		}
 		if itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0 {
 			if err := sanityCheckSignature(vbig, itx.R.ToBig(), itx.S.ToBig(), false); err != nil {
+				return err
+			}
+		}
+
+	case ShieldedTxType:
+		var itx ShieldedTx
+		inner = &itx
+		if dec.ChainID == nil {
+			return errors.New("missing required field 'chainId' in transaction")
+		}
+		itx.ChainID = (*big.Int)(dec.ChainID)
+		if dec.Nonce == nil {
+			return errors.New("missing required field 'nonce' in transaction")
+		}
+		itx.Nonce = uint64(*dec.Nonce)
+		itx.To = dec.To // optional (nil for shield / pure transfer)
+		if dec.Gas == nil {
+			return errors.New("missing required field 'gas' for txdata")
+		}
+		itx.Gas = uint64(*dec.Gas)
+		if dec.MaxPriorityFeePerGas == nil {
+			return errors.New("missing required field 'maxPriorityFeePerGas' for txdata")
+		}
+		itx.GasTipCap = (*big.Int)(dec.MaxPriorityFeePerGas)
+		if dec.MaxFeePerGas == nil {
+			return errors.New("missing required field 'maxFeePerGas' for txdata")
+		}
+		itx.GasFeeCap = (*big.Int)(dec.MaxFeePerGas)
+		if dec.Anchor == nil {
+			return errors.New("missing required field 'anchor' in shielded transaction")
+		}
+		itx.Anchor = *dec.Anchor
+		itx.Nullifiers = dec.Nullifiers
+		itx.Commitments = dec.NoteCommitments
+		if dec.ValueBalance == nil {
+			return errors.New("missing required field 'valueBalance' in shielded transaction")
+		}
+		vb := (*big.Int)(dec.ValueBalance)
+		if dec.ValueBalanceNeg != nil && *dec.ValueBalanceNeg {
+			vb = new(big.Int).Neg(vb)
+		}
+		itx.ValueBalance = vb
+		if dec.ShieldedProof != nil {
+			itx.Proof = *dec.ShieldedProof
+		}
+		// signature R, S, V
+		if dec.R == nil {
+			return errors.New("missing required field 'r' in transaction")
+		}
+		itx.R = (*big.Int)(dec.R)
+		if dec.S == nil {
+			return errors.New("missing required field 's' in transaction")
+		}
+		itx.S = (*big.Int)(dec.S)
+		vbig, err := dec.yParityValue()
+		if err != nil {
+			return err
+		}
+		itx.V = vbig
+		if itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0 {
+			if err := sanityCheckSignature(vbig, itx.R, itx.S, false); err != nil {
 				return err
 			}
 		}

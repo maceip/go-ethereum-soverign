@@ -132,6 +132,28 @@ var (
 
 	// -- EIP-7825 errors --
 	ErrGasLimitTooHigh = errors.New("transaction gas limit too high")
+
+	// -- Privacy Phase 1 (shielded transaction) errors --
+
+	// ErrShieldedInactive is returned if a shielded transaction is processed before
+	// the Privacy Phase 1 fork is active.
+	ErrShieldedInactive = errors.New("shielded transactions not activated")
+
+	// ErrShieldedUnknownAnchor is returned if a shielded transaction's anchor does
+	// not match a current or recent shielded-pool root.
+	ErrShieldedUnknownAnchor = errors.New("shielded transaction anchor is not a known recent root")
+
+	// ErrShieldedDoubleSpend is returned if a shielded transaction reuses a
+	// nullifier already spent (or duplicated within the same transaction).
+	ErrShieldedDoubleSpend = errors.New("shielded transaction double-spends a nullifier")
+
+	// ErrShieldedPoolInsufficient is returned if an unshield would release more ETH
+	// than is locked in the shielded pool.
+	ErrShieldedPoolInsufficient = errors.New("shielded pool has insufficient balance for unshield")
+
+	// ErrShieldedValueOverflow is returned if a shielded value balance does not fit
+	// in 256 bits.
+	ErrShieldedValueOverflow = errors.New("shielded value balance overflows 256 bits")
 )
 
 // EIP-7702 state transition errors.

@@ -467,6 +467,7 @@ type ChainConfig struct {
 	BPO5Time      *uint64 `json:"bpo5Time,omitempty"`      // BPO5 switch time (nil = no fork, 0 = already on bpo5)
 	AmsterdamTime *uint64 `json:"amsterdamTime,omitempty"` // Amsterdam switch time (nil = no fork, 0 = already on amsterdam)
 	UBTTime       *uint64 `json:"ubtTime,omitempty"`       // UBT switch time (nil = no fork, 0 = already on UBT)
+	Privacy1Time  *uint64 `json:"privacy1Time,omitempty"`  // Privacy Phase 1 switch time (nil = no fork): enables confidential ETH (shielded) transactions
 
 	// TerminalTotalDifficulty is the amount of total difficulty reached by
 	// the network that triggers the consensus upgrade.
@@ -834,6 +835,13 @@ func (c *ChainConfig) IsPrague(num *big.Int, time uint64) bool {
 // IsOsaka returns whether time is either equal to the Osaka fork time or greater.
 func (c *ChainConfig) IsOsaka(num *big.Int, time uint64) bool {
 	return c.IsLondon(num) && isTimestampForked(c.OsakaTime, time)
+}
+
+// IsPrivacy1 returns whether time is either equal to the Privacy Phase 1 fork time
+// or greater. Privacy Phase 1 enables confidential ETH (shielded) transactions and
+// the protocol-native shielded pool.
+func (c *ChainConfig) IsPrivacy1(num *big.Int, time uint64) bool {
+	return c.IsLondon(num) && isTimestampForked(c.Privacy1Time, time)
 }
 
 // IsBPO1 returns whether time is either equal to the BPO1 fork time or greater.
@@ -1381,6 +1389,7 @@ type Rules struct {
 	IsBerlin, IsLondon                                      bool
 	IsMerge, IsShanghai, IsCancun, IsPrague, IsOsaka        bool
 	IsAmsterdam, IsUBT                                      bool
+	IsPrivacy1                                              bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -1408,5 +1417,6 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsAmsterdam:      isMerge && c.IsAmsterdam(num, timestamp),
 		IsUBT:            isUBT,
 		IsEIP4762:        isUBT,
+		IsPrivacy1:       isMerge && c.IsPrivacy1(num, timestamp),
 	}
 }
