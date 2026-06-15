@@ -21,6 +21,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/core/privacy"
+	"github.com/ethereum/go-ethereum/core/privacy/zk"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -98,3 +99,39 @@ func (c *pedersenAdd) Run(input []byte) ([]byte, error) {
 }
 
 func (c *pedersenAdd) Name() string { return "PEDERSEN_ADD" }
+
+// plonkVerify is the precompile verifying a PlonK proof over BN254. It is the
+// on-chain verification primitive the confidential-transaction flow (Phase 1) and
+// private contracts (Phase 3) rely on: proving statements such as "these shielded
+// inputs cover these shielded outputs" without revealing amounts. Verifying a
+// PlonK proof in pure EVM bytecode would cost on the order of millions of gas;
+// exposing it natively is what the roadmap means by "EVM precompiles for verifying
+// common zk-SNARK schemes [...] to drastically reduce the mana cost of on-chain
+// proof verification".
+//
+// Input:  the length-prefixed (verifyingKey, proof, publicWitness) blob defined by
+//
+//	core/privacy/zk.DecodeVerifierInput, each component in gnark binary form.
+//
+// Output: the 32-byte value 1 if the proof is valid, empty otherwise. Malformed
+//
+//	input returns an error so it is treated as an invalid transaction.
+type plonkVerify struct{}
+
+func (c *plonkVerify) RequiredGas(input []byte) uint64 {
+	words := uint64(len(input)+31) / 32
+	return params.PlonkVerifyBaseGas + words*params.PlonkVerifyPerWordGas
+}
+
+func (c *plonkVerify) Run(input []byte) ([]byte, error) {
+	ok, err := zk.VerifyEncoded(input)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	return true32Byte, nil
+}
+
+func (c *plonkVerify) Name() string { return "PLONK_VERIFY" }

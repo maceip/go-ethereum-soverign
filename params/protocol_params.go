@@ -180,6 +180,15 @@ const (
 	PedersenCommitGas uint64 = 12000 // Price for computing a bn256 Pedersen commitment v*G + r*H
 	PedersenAddGas    uint64 = 600   // Price for a homomorphic addition of two commitments
 
+	// PlonkVerify backs the Phase 1 confidential-transaction / Phase 3 zk-SNARK
+	// verification precompile. PlonK verification cost is dominated by a constant
+	// number of pairings and multi-scalar multiplications independent of the
+	// statement, plus a small linear term in the encoded input size. These are
+	// devnet placeholder values to be calibrated against benchmarks before any
+	// non-devnet activation.
+	PlonkVerifyBaseGas    uint64 = 250000 // Base price for a PlonK (BN254) proof verification
+	PlonkVerifyPerWordGas uint64 = 12     // Per-32-byte-word price of the verifier input
+
 	// The Refund Quotient is the cap on how much of the used gas can be refunded. Before EIP-3529,
 	// up to half the consumed gas could be refunded. Redefined as 1/5th in EIP-3529
 	RefundQuotient        uint64 = 2

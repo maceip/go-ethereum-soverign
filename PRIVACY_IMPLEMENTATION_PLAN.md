@@ -82,11 +82,24 @@ A devnet where `privacy_transfer` moves shielded ETH between two parties such th
 the public trace reveals neither amount nor the sender↔recipient link, validated by
 a full sync of a third node. Unit + state tests green; `go test ./core/...`.
 
-### Key decisions to settle first
-- **Proof system**: Groth16 (smallest proofs/cheapest verify, per-circuit trusted
-  setup) vs PlonK/Halo2 (universal setup). Roadmap cites both. Recommend Groth16
-  for v1 verify-cost, migrate to Halo2 in Phase 3.
+### Key decisions
+- **Proof system: PlonK (BN254), via gnark.** ✅ *Decided.* PlonK uses a universal,
+  updatable trusted setup (one SRS shared by every circuit) instead of a fresh
+  per-circuit ceremony, so new privacy circuits can ship without a new ceremony.
+  gnark provides a production Go implementation (Halo2 is Rust-only, which would
+  force an FFI/sidecar boundary). Migration to a transparent STARK verifier is
+  deferred to Phase 3 (post-quantum).
 - **Pool model**: single ETH pool vs multi-asset (defer multi-asset to Phase 3).
+
+### Status
+
+| Workstream | State |
+| --- | --- |
+| 3. ZK verification — PlonK BN254 verifier + `PLONK_VERIFY` precompile (`0x14`) | ✅ **Done** — `core/privacy/zk`, `core/vm/contracts_privacy.go`; full prove→verify test coverage |
+| 1. `ShieldedTxType` transaction | ⏳ Next |
+| 2. State-backed shielded pool | ⏳ Next |
+| 4. State-transition & pool integration | ⏳ Next |
+| 5. Fork gating + RPC | ⏳ Next (precompile currently rides the Osaka set for devnet) |
 
 ---
 

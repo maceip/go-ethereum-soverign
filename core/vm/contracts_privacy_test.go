@@ -21,6 +21,11 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/backend/plonk"
+	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/scs"
+	"github.com/consensys/gnark/test/unsafekzg"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/privacy"
 )
@@ -81,10 +86,104 @@ func TestPedersenCommitPrecompileBadInput(t *testing.T) {
 // fork at the documented addresses.
 func TestPrivacyPrecompilesRegistered(t *testing.T) {
 	set := PrecompiledContractsOsaka
-	if _, ok := set[common.BytesToAddress([]byte{0x12})]; !ok {
-		t.Fatal("PEDERSEN_COMMIT not registered at 0x12 in Osaka set")
+	for _, addr := range []byte{0x12, 0x13, 0x14} {
+		if _, ok := set[common.BytesToAddress([]byte{addr})]; !ok {
+			t.Fatalf("privacy precompile not registered at 0x%x in Osaka set", addr)
+		}
 	}
-	if _, ok := set[common.BytesToAddress([]byte{0x13})]; !ok {
-		t.Fatal("PEDERSEN_ADD not registered at 0x13 in Osaka set")
+}
+
+// plonkTestCircuit proves knowledge of X such that X*X == Y, with Y public.
+type plonkTestCircuit struct {
+	X frontend.Variable `gnark:",secret"`
+	Y frontend.Variable `gnark:",public"`
+}
+
+func (c *plonkTestCircuit) Define(api frontend.API) error {
+	api.AssertIsEqual(c.Y, api.Mul(c.X, c.X))
+	return nil
+}
+
+// buildPlonkInput produces a length-prefixed (vk, proof, publicWitness) blob in
+// the format the PLONK_VERIFY precompile consumes, proving 7*7 == 49.
+func buildPlonkInput(t *testing.T) []byte {
+	t.Helper()
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &plonkTestCircuit{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	srs, srsLagrange, err := unsafekzg.NewSRS(ccs)
+	if err != nil {
+		t.Fatalf("srs: %v", err)
+	}
+	pk, vk, err := plonk.Setup(ccs, srs, srsLagrange)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	full, err := frontend.NewWitness(&plonkTestCircuit{X: 7, Y: 49}, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatalf("witness: %v", err)
+	}
+	proof, err := plonk.Prove(ccs, pk, full)
+	if err != nil {
+		t.Fatalf("prove: %v", err)
+	}
+	pub, err := full.Public()
+	if err != nil {
+		t.Fatalf("public: %v", err)
+	}
+
+	// Serialize each component with a 4-byte big-endian length prefix.
+	enc := func(buf *bytes.Buffer) []byte {
+		b := buf.Bytes()
+		out := make([]byte, 4+len(b))
+		out[0] = byte(len(b) >> 24)
+		out[1] = byte(len(b) >> 16)
+		out[2] = byte(len(b) >> 8)
+		out[3] = byte(len(b))
+		copy(out[4:], b)
+		return out
+	}
+	var vkBuf, proofBuf, witBuf bytes.Buffer
+	if _, err := vk.WriteTo(&vkBuf); err != nil {
+		t.Fatalf("vk encode: %v", err)
+	}
+	if _, err := proof.WriteTo(&proofBuf); err != nil {
+		t.Fatalf("proof encode: %v", err)
+	}
+	if _, err := pub.WriteTo(&witBuf); err != nil {
+		t.Fatalf("witness encode: %v", err)
+	}
+	var out []byte
+	out = append(out, enc(&vkBuf)...)
+	out = append(out, enc(&proofBuf)...)
+	out = append(out, enc(&witBuf)...)
+	return out
+}
+
+// TestPlonkVerifyPrecompile checks a real PlonK proof verifies through the
+// PLONK_VERIFY (0x14) precompile and returns the canonical truthy 32-byte word.
+func TestPlonkVerifyPrecompile(t *testing.T) {
+	input := buildPlonkInput(t)
+	p := &plonkVerify{}
+
+	if g := p.RequiredGas(input); g == 0 {
+		t.Fatal("RequiredGas returned 0")
+	}
+	out, err := p.Run(input)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !bytes.Equal(out, true32Byte) {
+		t.Fatalf("valid proof did not return true word: %x", out)
+	}
+}
+
+// TestPlonkVerifyPrecompileMalformed checks malformed input is surfaced as an
+// error (treated as an invalid transaction) rather than silently passing.
+func TestPlonkVerifyPrecompileMalformed(t *testing.T) {
+	p := &plonkVerify{}
+	if _, err := p.Run([]byte{0x00, 0x00, 0x00, 0x05, 0x01}); err == nil {
+		t.Fatal("malformed input did not error")
 	}
 }
