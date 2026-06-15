@@ -355,6 +355,9 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		BloomCache:     uint64(cacheLimit),
 		RequiredBlocks: config.RequiredBlocks,
 		SnapV2:         config.SnapV2,
+
+		DandelionEnabled: config.DandelionEnabled,
+		Dandelion:        config.Dandelion,
 	}); err != nil {
 		return nil, err
 	}

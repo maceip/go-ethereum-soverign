@@ -66,6 +66,7 @@ import (
 	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/p2p/dandelion"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/nat"
 	"github.com/ethereum/go-ethereum/p2p/netutil"
@@ -182,6 +183,38 @@ var (
 		Name:     "dev.privacy",
 		Usage:    "Enable confidential ETH (shielded) transactions in developer mode (INSECURE devnet trusted setup; never use on a value-bearing network)",
 		Category: flags.DevCategory,
+	}
+
+	// Dandelion++ network-origin privacy flags (Phase 1). Network-level only; no
+	// consensus impact.
+	DandelionEnabledFlag = &cli.BoolFlag{
+		Name:     "dandelion",
+		Usage:    "Enable Dandelion++ network-origin privacy for locally submitted transactions (stem/fluff propagation to obscure the originating node)",
+		Category: flags.NetworkingCategory,
+	}
+	DandelionStemProbabilityFlag = &cli.Float64Flag{
+		Name:     "dandelion.stemprob",
+		Usage:    "Dandelion++ per-hop probability of remaining in the stem (anonymity) phase",
+		Value:    dandelion.DefaultConfig().StemProbability,
+		Category: flags.NetworkingCategory,
+	}
+	DandelionEpochDurationFlag = &cli.DurationFlag{
+		Name:     "dandelion.epoch",
+		Usage:    "Dandelion++ duration a stem successor mapping remains fixed before re-randomisation",
+		Value:    dandelion.DefaultConfig().EpochDuration,
+		Category: flags.NetworkingCategory,
+	}
+	DandelionEmbargoBaseFlag = &cli.DurationFlag{
+		Name:     "dandelion.embargo",
+		Usage:    "Dandelion++ minimum time a stemmed transaction is held before the failsafe diffuses it",
+		Value:    dandelion.DefaultConfig().EmbargoBase,
+		Category: flags.NetworkingCategory,
+	}
+	DandelionEmbargoJitterFlag = &cli.DurationFlag{
+		Name:     "dandelion.embargojitter",
+		Usage:    "Dandelion++ additional random delay added to the embargo timer per transaction",
+		Value:    dandelion.DefaultConfig().EmbargoJitter,
+		Category: flags.NetworkingCategory,
 	}
 
 	IdentityFlag = &cli.StringFlag{
@@ -1621,6 +1654,25 @@ func setGPO(ctx *cli.Context, cfg *gasprice.Config) {
 	}
 }
 
+// setDandelion configures Dandelion++ network-origin privacy from CLI flags.
+func setDandelion(ctx *cli.Context, cfg *ethconfig.Config) {
+	if ctx.IsSet(DandelionEnabledFlag.Name) {
+		cfg.DandelionEnabled = ctx.Bool(DandelionEnabledFlag.Name)
+	}
+	if ctx.IsSet(DandelionStemProbabilityFlag.Name) {
+		cfg.Dandelion.StemProbability = ctx.Float64(DandelionStemProbabilityFlag.Name)
+	}
+	if ctx.IsSet(DandelionEpochDurationFlag.Name) {
+		cfg.Dandelion.EpochDuration = ctx.Duration(DandelionEpochDurationFlag.Name)
+	}
+	if ctx.IsSet(DandelionEmbargoBaseFlag.Name) {
+		cfg.Dandelion.EmbargoBase = ctx.Duration(DandelionEmbargoBaseFlag.Name)
+	}
+	if ctx.IsSet(DandelionEmbargoJitterFlag.Name) {
+		cfg.Dandelion.EmbargoJitter = ctx.Duration(DandelionEmbargoJitterFlag.Name)
+	}
+}
+
 func setTxPool(ctx *cli.Context, cfg *legacypool.Config) {
 	if ctx.IsSet(TxPoolLocalsFlag.Name) {
 		locals := strings.Split(ctx.String(TxPoolLocalsFlag.Name), ",")
@@ -1730,6 +1782,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	setBlobPool(ctx, &cfg.BlobPool)
 	setMiner(ctx, &cfg.Miner)
 	setRequiredBlocks(ctx, cfg)
+	setDandelion(ctx, cfg)
 
 	// Cap the cache allowance and tune the garbage collector against
 	// the effective memory limit (cgroup-imposed when running in a

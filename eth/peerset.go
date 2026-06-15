@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/p2p/enode"
 )
 
 var (
@@ -198,6 +199,21 @@ func (ps *peerSet) all() []*ethPeer {
 	defer ps.lock.RUnlock()
 
 	return slices.Collect(maps.Values(ps.peers))
+}
+
+// peerByNode retrieves the connected peer with the given enode ID, or nil if it
+// is not present. Used by the Dandelion++ router to resolve its chosen stem
+// successor to a live peer.
+func (ps *peerSet) peerByNode(id enode.ID) *ethPeer {
+	ps.lock.RLock()
+	defer ps.lock.RUnlock()
+
+	for _, p := range ps.peers {
+		if p.Node().ID() == id {
+			return p
+		}
+	}
+	return nil
 }
 
 // len returns if the current number of `eth` peers in the set. Since the `snap`

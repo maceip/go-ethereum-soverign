@@ -59,6 +59,9 @@ func (h *ethHandler) Handle(peer *eth.Peer, packet eth.Packet) error {
 	// Consume any broadcasts and announces, forwarding the rest to the downloader
 	switch packet := packet.(type) {
 	case *eth.NewPooledTransactionHashesPacket:
+		// An announcement is a Dandelion++ fluff sighting: cancel any embargo we
+		// hold for these hashes since they are now diffusing.
+		(*handler)(h).markFluffed(packet.Hashes...)
 		return h.txFetcher.Notify(peer.ID(), packet.Types, packet.Sizes, packet.Hashes)
 
 	case *eth.TransactionsPacket:
@@ -69,6 +72,7 @@ func (h *ethHandler) Handle(peer *eth.Peer, packet eth.Packet) error {
 		if err := handleTransactions(peer, txs, true); err != nil {
 			return fmt.Errorf("Transactions: %v", err)
 		}
+		(*handler)(h).markFluffed(txHashes(txs)...)
 		return h.txFetcher.Enqueue(peer.ID(), txs, false)
 
 	case *eth.PooledTransactionsPacket:
@@ -79,11 +83,21 @@ func (h *ethHandler) Handle(peer *eth.Peer, packet eth.Packet) error {
 		if err := handleTransactions(peer, txs, false); err != nil {
 			return fmt.Errorf("PooledTransactions: %v", err)
 		}
+		(*handler)(h).markFluffed(txHashes(txs)...)
 		return h.txFetcher.Enqueue(peer.ID(), txs, true)
 
 	default:
 		return fmt.Errorf("unexpected eth packet type: %T", packet)
 	}
+}
+
+// txHashes returns the hashes of the given transactions.
+func txHashes(txs []*types.Transaction) []common.Hash {
+	hashes := make([]common.Hash, len(txs))
+	for i, tx := range txs {
+		hashes[i] = tx.Hash()
+	}
+	return hashes
 }
 
 // handleTransactions marks all given transactions as known to the peer

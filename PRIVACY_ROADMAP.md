@@ -18,11 +18,14 @@ infrastructure the later phases compose on top of.
 | **UX & wallet integration** — `privacy` JSON-RPC namespace (pool introspection, shield builder, stealth/commitment helpers) | 1 | [`eth/privacy_api.go`](eth/privacy_api.go) |
 | **Privacy precompiles** — `PEDERSEN_COMMIT` (`0x12`), `PEDERSEN_ADD` (`0x13`), `PLONK_VERIFY` (`0x14`), gated by the Privacy1 fork | 3 | [`core/vm/contracts_privacy.go`](core/vm/contracts_privacy.go) |
 | **Shielded-pool primitives** — incremental Merkle commitment tree + nullifier set for double-spend prevention | 2 / 4 | [`core/privacy/shieldedpool.go`](core/privacy/shieldedpool.go) |
+| **Network-origin privacy** — Dandelion++ stem/fluff transaction propagation, wired into the live broadcast path with embargo failsafe | 1 | [`p2p/dandelion/dandelion.go`](p2p/dandelion/dandelion.go), [`eth/handler_dandelion.go`](eth/handler_dandelion.go) |
 
-> Network-origin privacy (Dandelion++) is a **Phase 1 core requirement**, but it
-> is **not implemented** in the current client path. The standalone routing module
-> was removed rather than shipped unwired; [`shape.md`](shape.md) is the canonical
-> scope document for restoring it correctly.
+> Network-origin privacy (Dandelion++) is a **Phase 1 core requirement** and is
+> **wired into the live transaction-propagation path**: locally-originated
+> transactions enter the stem phase by default, with an embargo failsafe and
+> ordinary gossip as the safety fallback. It is feature-gated behind `--dandelion`
+> and tunable without any consensus change. [`shape.md`](shape.md) is the canonical
+> scope document.
 
 ## Design notes
 

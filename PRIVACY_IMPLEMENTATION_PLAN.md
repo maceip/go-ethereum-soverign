@@ -81,10 +81,20 @@ the client as a consensus rule.
    - Extend the `privacy` RPC namespace: `shield`, `unshield`, `transfer`,
      `scanNotes` (using existing stealth scanning), `getMerkleProof`.
 
-6. **Network-origin privacy — Dandelion++ (Roadmap Ph.1 §3).**
-   - Restore Dandelion++ as Phase 1 work only when it is wired into the live
-     transaction propagation path. The required touchpoints and tests are defined
-     in [`shape.md`](shape.md).
+6. **Network-origin privacy — Dandelion++ (Roadmap Ph.1 §3). _Implemented._**
+   - The Dandelion++ router ([`p2p/dandelion/dandelion.go`](p2p/dandelion/dandelion.go))
+     is wired into the live transaction-propagation path
+     ([`eth/handler_dandelion.go`](eth/handler_dandelion.go)). Locally-originated
+     transactions (tracked from the RPC `SendTx` path) enter the stem phase by
+     default, are relayed to a single epoch-stable successor peer, and fall back
+     to ordinary diffusion when no safe successor exists. Inbound gossip cancels
+     the per-transaction embargo, and an embargo loop diffuses stemmed
+     transactions whose failsafe timer expires.
+   - Feature-gated behind `--dandelion` and tunable (`--dandelion.stemprob`,
+     `--dandelion.epoch`, `--dandelion.embargo`, `--dandelion.embargojitter`)
+     without any consensus change. Covered by router unit tests and multi-node
+     origin-obfuscation / diffusion / embargo-failsafe tests in
+     [`eth/handler_dandelion_test.go`](eth/handler_dandelion_test.go).
 
 ### Exit criterion
 A devnet where `privacy_transfer` moves shielded ETH between two parties such that
@@ -142,7 +152,7 @@ devnet verify each other's proofs.
 | EIP-5564 stealth addresses | Real; now hashes the compressed point per EIP-5564 (was x-coordinate only) |
 | Pedersen commitments + `PEDERSEN_COMMIT/ADD`/`PLONK_VERIFY` precompiles | Real, general-purpose; **not** load-bearing for the shielded flow (which uses MiMC + a direct verifier) |
 | Trusted setup | **Deterministic but insecure** (public seed); a real ceremony is the one remaining production blocker |
-| Network-origin privacy (Dandelion++) | **Phase 1 required, not implemented.** A standalone routing module was removed rather than shipped unwired; restoring it correctly needs tx-locality plumbing and a multi-node propagation test harness. See `shape.md`. |
+| Network-origin privacy (Dandelion++) | **Real; wired into the live broadcast path.** Local-origin tracking, stem relay to an epoch-stable successor, embargo failsafe, and gossip fallback; feature-gated behind `--dandelion` and covered by multi-node origin-obfuscation tests. See `shape.md`. |
 | Gas costs for shielded ops / precompiles | Real charging, **placeholder values** pending benchmarking |
 
 ### How a shielded transaction is processed (implemented)

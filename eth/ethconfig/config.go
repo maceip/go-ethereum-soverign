@@ -34,6 +34,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/miner"
+	"github.com/ethereum/go-ethereum/p2p/dandelion"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
@@ -71,6 +72,7 @@ var Defaults = Config{
 	Miner:                   miner.DefaultConfig,
 	TxPool:                  legacypool.DefaultConfig,
 	BlobPool:                blobpool.DefaultConfig,
+	Dandelion:               dandelion.DefaultConfig(),
 	RPCGasCap:               50000000,
 	RPCEVMTimeout:           5 * time.Second,
 	GPO:                     FullNodeGPO,
@@ -168,6 +170,13 @@ type Config struct {
 	// Transaction pool options
 	TxPool   legacypool.Config
 	BlobPool blobpool.Config
+
+	// DandelionEnabled turns on Dandelion++ network-origin privacy for locally
+	// submitted transactions (Phase 1 of the privacy roadmap). It is a
+	// network-level, non-consensus feature.
+	DandelionEnabled bool
+	// Dandelion holds the Dandelion++ tuning parameters used when enabled.
+	Dandelion dandelion.Config
 
 	// Gas Price Oracle options
 	GPO gasprice.Config

@@ -43,6 +43,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/p2p/dandelion"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 )
 
@@ -109,6 +110,9 @@ type handlerConfig struct {
 	BloomCache     uint64                 // Megabytes to alloc for snap sync bloom
 	RequiredBlocks map[uint64]common.Hash // Hard coded map of required block hashes for sync challenges
 	SnapV2         bool                   // Whether to advertise and sync via the snap/2 protocol
+
+	DandelionEnabled bool             // Whether Dandelion++ network-origin privacy is enabled
+	Dandelion        dandelion.Config // Dandelion++ tuning parameters (used when enabled)
 }
 
 type handler struct {
@@ -129,6 +133,13 @@ type handler struct {
 	txsCh      chan core.NewTxsEvent
 	txsSub     event.Subscription
 	blockRange *blockRangeState
+
+	// Dandelion++ network-origin privacy (Phase 1). dandelion is nil when the
+	// feature is disabled, in which case the broadcast path behaves exactly like
+	// upstream go-ethereum.
+	dandelion    *dandelion.Router
+	dandelionCfg dandelion.Config
+	localOrigins *originTracker // hashes of locally-originated transactions
 
 	requiredBlocks map[uint64]common.Hash
 
@@ -183,6 +194,19 @@ func newHandler(config *handlerConfig) (*handler, error) {
 		return nil
 	}
 	h.txFetcher = fetcher.NewTxFetcher(h.chain, validateMeta, addTxs, fetchTx, h.removePeer)
+
+	// Enable Dandelion++ network-origin privacy if requested. The router is
+	// transport-agnostic; the stem/fluff actions are wired into the transaction
+	// broadcast path (see handler_dandelion.go).
+	if config.DandelionEnabled {
+		h.dandelionCfg = config.Dandelion
+		h.dandelion = dandelion.New(config.Dandelion)
+		h.localOrigins = newOriginTracker()
+		log.Info("Dandelion++ transaction-origin privacy enabled",
+			"stemprob", config.Dandelion.StemProbability,
+			"epoch", config.Dandelion.EpochDuration,
+			"embargo", config.Dandelion.EmbargoBase)
+	}
 	return h, nil
 }
 
@@ -268,6 +292,9 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 		return err
 	}
 	defer h.unregisterPeer(peer.ID())
+
+	// Make the new peer eligible as a Dandelion++ stem successor.
+	h.updateDandelionPeers()
 
 	p := h.peers.peer(peer.ID())
 	if p == nil {
@@ -401,6 +428,8 @@ func (h *handler) unregisterPeer(id string) {
 	if err := h.peers.unregisterPeer(id); err != nil {
 		logger.Error("Ethereum peer removal failed", "err", err)
 	}
+	// Keep the Dandelion++ successor set in sync with the live peer set.
+	h.updateDandelionPeers()
 }
 
 func (h *handler) Start(maxPeers int) {
@@ -411,6 +440,12 @@ func (h *handler) Start(maxPeers int) {
 	h.txsCh = make(chan core.NewTxsEvent, txChanSize)
 	h.txsSub = h.txpool.SubscribeTransactions(h.txsCh, false)
 	go h.txBroadcastLoop()
+
+	// Run the Dandelion++ embargo failsafe loop when network-origin privacy is on.
+	if h.dandelion != nil {
+		h.wg.Add(1)
+		go h.dandelionLoop()
+	}
 
 	// broadcast block range
 	h.wg.Add(1)
@@ -449,7 +484,26 @@ func (h *handler) Stop() {
 // - To a square root of all peers for non-blob transactions
 // - And, separately, as announcements to all peers which are not known to
 // already have the given transaction.
+//
+// When Dandelion++ network-origin privacy is enabled, locally-originated
+// transactions are first routed through the stem phase (relayed to a single
+// successor peer) instead of being diffused immediately; only the transactions
+// returned by stemTransactions are diffused here.
 func (h *handler) BroadcastTransactions(txs types.Transactions) {
+	if h.dandelion != nil {
+		txs = h.stemTransactions(txs)
+		if len(txs) == 0 {
+			return
+		}
+	}
+	h.diffuseTransactions(txs)
+}
+
+// diffuseTransactions propagates a batch of transactions using ordinary Ethereum
+// gossip: full transactions to a square root of peers and announcements to the
+// rest. This is the Dandelion++ "fluff" behaviour and the only behaviour when the
+// feature is disabled.
+func (h *handler) diffuseTransactions(txs types.Transactions) {
 	var (
 		blobTxs  int // Number of blob transactions to announce only
 		largeTxs int // Number of large transactions to announce only
