@@ -24,8 +24,11 @@ infrastructure the later phases compose on top of.
 > **wired into the live transaction-propagation path**: locally-originated
 > transactions enter the stem phase by default, with an embargo failsafe and
 > ordinary gossip as the safety fallback. It is feature-gated behind `--dandelion`
-> and tunable without any consensus change. [`shape.md`](shape.md) is the canonical
-> scope document.
+> and tunable without any consensus change. The **initial design is single-hop**
+> and still leaks the origin in several cases (originator fluff, re-broadcast,
+> non-RPC local paths); the guarantee today is "single-hop origin obfuscation,"
+> not full Dandelion++. The required fixes are tracked as the Design Corrections in
+> [`shape.md`](shape.md), the canonical scope document.
 
 ## Design notes
 
