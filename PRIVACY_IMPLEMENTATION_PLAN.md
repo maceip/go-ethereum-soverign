@@ -7,6 +7,10 @@ go-ethereum client. It builds directly on the foundation already merged to `mast
 stealth addresses, the shielded-pool primitives, and the
 `PEDERSEN_COMMIT`/`PEDERSEN_ADD` precompiles.
 
+[`shape.md`](shape.md) is the canonical alignment document. In particular,
+Dandelion++ network-origin privacy is a **Phase 1 core requirement** under the
+source roadmap, not Phase 2 work.
+
 Each engineering phase is independently shippable, gated behind a hard fork so
 mainnet semantics never change until activation, and ends with a clear,
 testable exit criterion.
@@ -15,8 +19,8 @@ testable exit criterion.
 
 | Engineering phase | Pulls from roadmap | Theme |
 | --- | --- | --- |
-| **Phase 1 — Confidential ETH (consensus)** | Roadmap Ph.1 §1, Ph.3 §3, Ph.4 §1 | Make the merged primitives *consensus-real*: a shielded ETH pool with a private transfer transaction. |
-| **Phase 2 — Mempool & network privacy** | Roadmap Ph.1 §2–§3, Ph.4 §3 | Protect transactions *before* inclusion: encrypted mempool, Dandelion++, fair ordering. |
+| **Phase 1 — Confidential ETH + network-origin privacy** | Roadmap Ph.1 §1–§4, Ph.3 §3, Ph.4 §1 | Make ETH private end-to-end enough for Phase 1: shielded transfer plus Dandelion++ origin protection. |
+| **Phase 2 — Encrypted mempool & fair ordering** | Roadmap Ph.1 §2, Ph.4 §3 | Protect transaction contents and ordering before inclusion: encrypted mempool and fair ordering. |
 | **Phase 3 — Private tokens, contracts & PQ** | Roadmap Ph.2, Ph.3 §1–§2, Ph.5 | Generalise privacy to tokens and computation, then quantum-harden. |
 
 **Recommended ordering: 1 → 2 → 3.** The roadmap itself states Phase 1 is
@@ -53,14 +57,14 @@ the client as a consensus rule.
 
 3. **ZK verification.**
    - Add the `gnark` proving/verifying frontend as a dependency (only
-     `gnark-crypto` is present today) and a **Groth16 verifier precompile**
+     `gnark-crypto` is present today) and a **PlonK verifier precompile**
      (`0x14`) plus range-proof support, fulfilling Roadmap Ph.3 §3 ("precompiles
      for verifying common zk-SNARK schemes").
    - The shielded transfer circuit proves: input notes exist in the tree (Merkle
      membership), nullifiers are correctly derived, output commitments are
      well-formed, and `Σ inputs = Σ outputs + valueBalance` (reuse the Pedersen
      homomorphism / `PEDERSEN_ADD`).
-   - Circuits live in a new `core/privacy/circuits/` package with a checked-in
+   - Circuits live in `core/privacy/circuit/` with a checked-in
      verifying key; proving stays client-side/wallet-side.
 
 4. **State-transition & pool integration.**
@@ -76,6 +80,11 @@ the client as a consensus rule.
      the tx type and precompile.
    - Extend the `privacy` RPC namespace: `shield`, `unshield`, `transfer`,
      `scanNotes` (using existing stealth scanning), `getMerkleProof`.
+
+6. **Network-origin privacy — Dandelion++ (Roadmap Ph.1 §3).**
+   - Restore Dandelion++ as Phase 1 work only when it is wired into the live
+     transaction propagation path. The required touchpoints and tests are defined
+     in [`shape.md`](shape.md).
 
 ### Exit criterion
 A devnet where `privacy_transfer` moves shielded ETH between two parties such that
@@ -133,7 +142,7 @@ devnet verify each other's proofs.
 | EIP-5564 stealth addresses | Real; now hashes the compressed point per EIP-5564 (was x-coordinate only) |
 | Pedersen commitments + `PEDERSEN_COMMIT/ADD`/`PLONK_VERIFY` precompiles | Real, general-purpose; **not** load-bearing for the shielded flow (which uses MiMC + a direct verifier) |
 | Trusted setup | **Deterministic but insecure** (public seed); a real ceremony is the one remaining production blocker |
-| Network-origin privacy (Dandelion++) | **Not implemented.** A standalone routing module was removed rather than shipped unwired; integrating it correctly needs tx-locality plumbing and a multi-node propagation test harness (Phase 2 work). |
+| Network-origin privacy (Dandelion++) | **Phase 1 required, not implemented.** A standalone routing module was removed rather than shipped unwired; restoring it correctly needs tx-locality plumbing and a multi-node propagation test harness. See `shape.md`. |
 | Gas costs for shielded ops / precompiles | Real charging, **placeholder values** pending benchmarking |
 
 ### How a shielded transaction is processed (implemented)
@@ -156,7 +165,7 @@ constrains, in zero knowledge:
 - **Membership**: each non-dummy input note's commitment is a leaf under the
   public `Anchor` (Merkle path verified with the same MiMC the consensus pool uses
   — the pool tree was migrated from Keccak to MiMC so the two agree).
-- **Ownership + nullifier**: `nf = MiMC(ask, rho)` is correctly derived and equals
+- **Ownership + nullifier**: `nf = MiMC(ask, cm)` is correctly derived and equals
   the revealed nullifier; only the spending-key holder can produce it.
 - **Commitment well-formedness**: each output commitment opens to its note.
 - **Value conservation**: `Σ inputs = Σ outputs + valueBalance`, with 128-bit range
@@ -177,42 +186,29 @@ proof does not validate a transaction whose public fields were altered.
 
 ---
 
-## Phase 2 — Mempool & network privacy (anti-MEV, anti-surveillance)
+## Phase 2 — Encrypted mempool & fair ordering (anti-MEV, anti-surveillance)
 
-**Goal.** Transaction *content and origin* are protected before inclusion,
-neutralising front-running/sandwiching and IP-level deanonymisation. Largely
-independent of Phase 1.
+**Goal.** Transaction *content and ordering* are protected before inclusion,
+neutralising front-running/sandwiching. Dandelion++ origin privacy remains Phase 1
+scope; see `shape.md`.
 
 ### Workstreams
 
-1. **Dandelion++ network-origin privacy (Roadmap Ph.1 §3).**
-   - Build a stem/fluff router and integrate it into `eth/handler.go`
-     `BroadcastTransactions`, behind a flag. Requires first surfacing tx locality
-     (the current `core.NewTxsEvent` carries no origin flag) so that only
-     locally-originated transactions are stemmed; relayed transactions must keep
-     diffusing.
-   - Run an embargo failsafe; mark transactions fluffed when seen via normal gossip.
-   - **Must be validated on a multi-node propagation test harness** before landing —
-     a single-process unit test cannot demonstrate the source-obfuscation property,
-     and a half-wired version provides no real privacy.
-
-2. **Encrypted mempool (Roadmap Ph.1 §2, Ph.4 §3).**
+1. **Encrypted mempool (Roadmap Ph.1 §2, Ph.4 §3).**
    - Commit-reveal first: peers gossip a commitment to the tx; the payload is
      revealed only at/after inclusion.
    - Then threshold encryption: txs encrypted to a validator-set key, decrypted on
      inclusion via a threshold scheme (Shamir). Inspired by Shutter Network. This
      is the largest sub-project; stage it behind commit-reveal.
 
-3. **Fair ordering & PBS hooks (Roadmap Ph.4 §3).**
+2. **Fair ordering & PBS hooks (Roadmap Ph.4 §3).**
    - Expose an ordering hook in the miner/builder path
      (`miner/`) so encrypted/committed txs are ordered before decryption.
    - Optional VDF-based or commit-reveal sortition for proposer-neutral ordering.
 
 ### Exit criterion
-On a multi-node devnet: (a) a transaction's origin node is not identifiable from
-announcement timing across N adversarial observers (Dandelion++ statistical test);
-(b) tx contents are unavailable to the proposer until ordering is fixed
-(commit-reveal integration test).
+On a multi-node devnet, tx contents are unavailable to the proposer until ordering
+is fixed (commit-reveal integration test).
 
 ### Key decision
 Encrypted-mempool design: **commit-reveal** (simpler, ships first, weaker
@@ -244,7 +240,7 @@ then migrate cryptography to be quantum-resistant.
    - Add lattice/hash-based signature verification (CRYSTALS-Dilithium, SPHINCS+)
      selectable via account abstraction, allowing legacy + PQ accounts to coexist.
    - Migrate the proof system from pairing-based SNARKs to **zk-STARKs**
-     (transparent, no trusted setup, PQ-friendly). Swap the Phase 1 Groth16 verifier
+     (transparent, no trusted setup, PQ-friendly). Swap the Phase 1 PlonK verifier
      for a STARK verifier behind a new fork.
    - PQ signature aggregation to manage larger signature sizes.
 

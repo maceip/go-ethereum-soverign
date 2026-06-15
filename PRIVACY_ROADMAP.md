@@ -19,9 +19,10 @@ infrastructure the later phases compose on top of.
 | **Privacy precompiles** — `PEDERSEN_COMMIT` (`0x12`), `PEDERSEN_ADD` (`0x13`), `PLONK_VERIFY` (`0x14`), gated by the Privacy1 fork | 3 | [`core/vm/contracts_privacy.go`](core/vm/contracts_privacy.go) |
 | **Shielded-pool primitives** — incremental Merkle commitment tree + nullifier set for double-spend prevention | 2 / 4 | [`core/privacy/shieldedpool.go`](core/privacy/shieldedpool.go) |
 
-> Network-origin privacy (Dandelion++) is **not implemented**. An earlier
-> standalone routing module was removed rather than shipped unwired; see
-> [`PRIVACY_IMPLEMENTATION_PLAN.md`](PRIVACY_IMPLEMENTATION_PLAN.md).
+> Network-origin privacy (Dandelion++) is a **Phase 1 core requirement**, but it
+> is **not implemented** in the current client path. The standalone routing module
+> was removed rather than shipped unwired; [`shape.md`](shape.md) is the canonical
+> scope document for restoring it correctly.
 
 ## Design notes
 
