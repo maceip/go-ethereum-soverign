@@ -114,11 +114,12 @@ func NoteCommitment(value *big.Int, apk, rho common.Hash) common.Hash {
 	return hashElements(valueField(value), toField(apk), toField(rho))
 }
 
-// Nullifier computes a note's nullifier: nf = MiMC(ask, rho). Only the holder of
-// the spending key can produce it, and it is unlinkable to the commitment without
-// that key.
-func Nullifier(ask, rho common.Hash) common.Hash {
-	return hashElements(toField(ask), toField(rho))
+// Nullifier computes a note's nullifier: nf = MiMC(ask, cm), binding it to the
+// full note commitment so that distinct notes always have distinct nullifiers
+// (even if they happen to share an ask). Only the holder of the spending key can
+// produce it, and it is unlinkable to the commitment without that key.
+func Nullifier(ask, commitment common.Hash) common.Hash {
+	return hashElements(toField(ask), toField(commitment))
 }
 
 // EmptySubtreeRoots returns the root of an empty subtree at each level 0..depth,

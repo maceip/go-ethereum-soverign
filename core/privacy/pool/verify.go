@@ -72,6 +72,28 @@ func (p *Pool) VerifyingKey() []byte {
 	return readBlob(p.be, slotVKLen, prefixVKChunk)
 }
 
+// memBackend is an in-memory Backend used to materialise genesis storage.
+type memBackend map[common.Hash]common.Hash
+
+func (m memBackend) GetState(_ common.Address, key common.Hash) common.Hash { return m[key] }
+func (m memBackend) SetState(_ common.Address, key, value common.Hash) common.Hash {
+	prev := m[key]
+	m[key] = value
+	return prev
+}
+
+// GenesisStorage returns the storage entries that must be placed under
+// SystemAddress in a genesis allocation so that the shielded pool starts with the
+// given verifying key installed. This lets a devnet bring up a fully functional
+// shielded pool from genesis, without any post-launch transaction. It reuses the
+// exact same write path as InstallVerifyingKey, so the on-chain layout is
+// guaranteed to match what consensus reads.
+func GenesisStorage(vk []byte) map[common.Hash]common.Hash {
+	be := make(memBackend)
+	New(be).InstallVerifyingKey(vk)
+	return be
+}
+
 // VerifyProof verifies a shielded transaction's proof against the installed
 // verifying key and the transaction's public fields. It returns nil iff the proof
 // is valid for exactly those fields.

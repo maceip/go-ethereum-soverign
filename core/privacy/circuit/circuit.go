@@ -125,8 +125,9 @@ func (c *Transfer) Define(api frontend.API) error {
 		}
 		api.AssertIsEqual(api.Select(in.IsDummy, c.Anchor, root), c.Anchor)
 
-		// Nullifier: nf = MiMC(ask, rho), bound to the publicly revealed value.
-		nf, err := hashCircuit(api, in.Ask, in.Rho)
+		// Nullifier: nf = MiMC(ask, cm), bound to the full note commitment so that
+		// distinct notes always yield distinct nullifiers.
+		nf, err := hashCircuit(api, in.Ask, cm)
 		if err != nil {
 			return err
 		}

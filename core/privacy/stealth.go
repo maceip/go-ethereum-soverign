@@ -147,11 +147,12 @@ func ComputeStealthKey(spendKey, viewKey *ecdsa.PrivateKey, ephemeralPub *ecdsa.
 	return crypto.ToECDSA(common.LeftPadBytes(d.Bytes(), 32))
 }
 
-// sharedSecret computes the X coordinate of priv*pub on secp256k1, the standard
-// ECDH shared secret.
+// sharedSecret computes the EIP-5564 ECDH shared secret: the compressed
+// (33-byte) encoding of the point priv*pub on secp256k1. EIP-5564 hashes the full
+// compressed point (not just the x-coordinate), so the y parity is included.
 func sharedSecret(priv []byte, pub *ecdsa.PublicKey) []byte {
-	x, _ := crypto.S256().ScalarMult(pub.X, pub.Y, priv)
-	return common.LeftPadBytes(x.Bytes(), 32)
+	x, y := crypto.S256().ScalarMult(pub.X, pub.Y, priv)
+	return crypto.CompressPubkey(&ecdsa.PublicKey{Curve: crypto.S256(), X: x, Y: y})
 }
 
 // addScalarBase returns pub + scalar*G as a public key.

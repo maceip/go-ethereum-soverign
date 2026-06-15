@@ -53,7 +53,8 @@ func setBits(dst *[MerkleDepth]frontend.Variable, src [MerkleDepth]uint8) {
 // all-zero membership path (which is bypassed because IsDummy=1).
 func dummyInput() (InputNote, common.Hash) {
 	ask, rho := randField(), randField()
-	nf := Nullifier(ask, rho)
+	cm := NoteCommitment(big.NewInt(0), DeriveApk(ask), rho)
+	nf := Nullifier(ask, cm)
 	in := InputNote{
 		Value:   big.NewInt(0),
 		Ask:     hv(ask),
@@ -153,14 +154,13 @@ func TestCircuitRejectsNonMemberSpend(t *testing.T) {
 	ask, rho := randField(), randField()
 	apk := DeriveApk(ask)
 	cm := NoteCommitment(value, apk, rho)
-	_ = cm
 	in := InputNote{Value: value, Ask: hv(ask), Rho: hv(rho), IsDummy: 0}
 	for i := 0; i < MerkleDepth; i++ {
 		in.PathElements[i] = big.NewInt(0) // bogus path
 		in.PathIndices[i] = 0
 	}
 	c.In[0] = in
-	c.Nullifiers[0] = hv(Nullifier(ask, rho))
+	c.Nullifiers[0] = hv(Nullifier(ask, cm))
 
 	din, dnf := dummyInput()
 	c.In[1] = din

@@ -35,16 +35,25 @@ import (
 //
 // PlonK requires a universal Structured Reference String (SRS) produced by a
 // trusted-setup ceremony. DevnetSetup below generates that SRS locally via gnark's
-// test-only unsafekzg generator, which keeps the "toxic waste" in process memory.
-// Anyone who can run this code therefore knows the toxic waste and can FORGE
-// PROOFS — i.e. mint shielded value or spend notes they do not own.
+// test-only unsafekzg generator from a FIXED, PUBLIC seed. Two properties follow:
 //
-// This is acceptable only for development networks and tests. Before any value-
-// bearing deployment the verifying key MUST be regenerated from an SRS produced by
-// a real, multi-party ceremony (e.g. perpetual powers-of-tau) and that verifying
-// key installed into the shielded pool. The circuit itself is unchanged by the
+//   - Deterministic: every node and every prover derives the identical proving and
+//     verifying keys, so proofs verify across a multi-node network and the
+//     genesis-installed verifying key matches what provers use. This is what makes
+//     a real (multi-node) devnet function, as opposed to a single-process test.
+//   - INSECURE: because the seed (and therefore the toxic waste) is public, anyone
+//     can FORGE PROOFS — mint shielded value or spend notes they do not own.
+//
+// This is acceptable only for development networks. Before any value-bearing
+// deployment the verifying key MUST be regenerated from an SRS produced by a real,
+// multi-party ceremony (e.g. perpetual powers-of-tau) and that verifying key
+// installed into the shielded pool. The circuit itself is unchanged by the
 // ceremony; only the SRS and derived keys differ.
 // ===========================================================================
+
+// devnetToxicSeed is the fixed, public seed used to derive the devnet SRS. Its
+// publicness is precisely why the devnet setup is insecure (see above).
+var devnetToxicSeed = []byte("go-ethereum/privacy/circuit/devnet-srs/v1")
 
 // ErrNotSetup is returned by Prove if DevnetSetup has not been run.
 var ErrNotSetup = errors.New("circuit: trusted setup not initialised (call DevnetSetup)")
@@ -65,7 +74,9 @@ func doSetup() {
 		setupErr = err
 		return
 	}
-	srs, srsLagrange, err := unsafekzg.NewSRS(compiled)
+	// A fixed seed makes the SRS — and therefore the proving/verifying keys —
+	// deterministic and identical on every node and prover.
+	srs, srsLagrange, err := unsafekzg.NewSRS(compiled, unsafekzg.WithToxicSeed(devnetToxicSeed))
 	if err != nil {
 		setupErr = err
 		return
@@ -83,13 +94,14 @@ func doSetup() {
 	vkBytes = buf.Bytes()
 }
 
-// DevnetSetup performs a one-time, in-process (UNSAFE) trusted setup and returns
-// the serialized verifying key to install into the shielded pool. It compiles the
-// circuit lazily, so consensus nodes that only verify proofs never pay for it. It
-// is safe to call concurrently; the heavy work runs once.
+// DevnetSetup performs a one-time, in-process, deterministic (but UNSAFE) trusted
+// setup and returns the serialized verifying key to install into the shielded
+// pool. It compiles the circuit lazily, so consensus nodes that only verify proofs
+// (using a genesis-installed key) never pay for it. It is safe to call
+// concurrently; the heavy work runs once.
 //
-// SECURITY: the SRS is generated locally; see the warning at the top of this file.
-// Do not use the returned verifying key on a value-bearing network.
+// SECURITY: the SRS is generated from a public seed; see the warning above. Do not
+// use the returned verifying key on a value-bearing network.
 func DevnetSetup() ([]byte, error) {
 	setupOnce.Do(doSetup)
 	if setupErr != nil {
@@ -97,6 +109,11 @@ func DevnetSetup() ([]byte, error) {
 	}
 	return vkBytes, nil
 }
+
+// DevnetVerifyingKey returns the serialized devnet verifying key, running the
+// deterministic setup if necessary. It is a convenience wrapper used by genesis
+// construction.
+func DevnetVerifyingKey() ([]byte, error) { return DevnetSetup() }
 
 // Prove produces a serialized PlonK proof for the given fully-assigned transfer
 // witness. DevnetSetup must have been called first. It returns an error if the

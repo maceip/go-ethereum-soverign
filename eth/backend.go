@@ -425,10 +425,10 @@ func (s *Ethereum) APIs() []rpc.API {
 			Namespace: "net",
 			Service:   s.netRPCService,
 		}, {
-			// Privacy roadmap (Phase 1, UX & Wallet Integration): stateless
-			// stealth-address and confidential-value helpers for wallets.
+			// Privacy roadmap (Phase 1): shielded-pool introspection, shield-tx
+			// building, and stateless stealth-address / commitment helpers.
 			Namespace: "privacy",
-			Service:   NewPrivacyAPI(),
+			Service:   NewPrivacyAPI(ethPrivacyBackend{s}),
 		},
 	}...)
 }

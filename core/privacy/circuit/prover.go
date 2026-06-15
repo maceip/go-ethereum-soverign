@@ -49,8 +49,8 @@ func (n Note) Apk() common.Hash { return DeriveApk(n.Ask) }
 // Commitment returns the note commitment, cm = MiMC(value, apk, rho).
 func (n Note) Commitment() common.Hash { return NoteCommitment(n.Value, n.Apk(), n.Rho) }
 
-// Nullifier returns the note's nullifier, nf = MiMC(ask, rho).
-func (n Note) Nullifier() common.Hash { return Nullifier(n.Ask, n.Rho) }
+// Nullifier returns the note's nullifier, nf = MiMC(ask, cm).
+func (n Note) Nullifier() common.Hash { return Nullifier(n.Ask, n.Commitment()) }
 
 // Spend references a note to be consumed, together with its leaf index in the
 // commitment tree (needed to build the Merkle membership path).
@@ -132,7 +132,10 @@ func BuildTransfer(tree *Tree, anchor common.Hash, spends []Spend, outputs []Out
 				in.PathIndices[d] = 0
 			}
 			c.In[i] = in
-			nullifiers[i] = Nullifier(ask, rho)
+			// The dummy's nullifier must be derived exactly as the circuit does:
+			// nf = MiMC(ask, cm) with cm the dummy note's commitment.
+			dummyCm := NoteCommitment(big.NewInt(0), DeriveApk(ask), rho)
+			nullifiers[i] = Nullifier(ask, dummyCm)
 		}
 		c.Nullifiers[i] = varOf(nullifiers[i])
 	}

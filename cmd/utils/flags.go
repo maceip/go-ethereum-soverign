@@ -178,6 +178,11 @@ var (
 		Value:    11500000,
 		Category: flags.DevCategory,
 	}
+	DeveloperPrivacyFlag = &cli.BoolFlag{
+		Name:     "dev.privacy",
+		Usage:    "Enable confidential ETH (shielded) transactions in developer mode (INSECURE devnet trusted setup; never use on a value-bearing network)",
+		Category: flags.DevCategory,
+	}
 
 	IdentityFlag = &cli.StringFlag{
 		Name:     "identity",
@@ -1989,6 +1994,16 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		// configure default developer genesis which will be used unless a
 		// datadir is specified and a chain is preexisting at that location.
 		cfg.Genesis = core.DeveloperGenesisBlock(ctx.Uint64(DeveloperGasLimitFlag.Name), &developer.Address)
+
+		// Optionally enable Privacy Phase 1 (confidential ETH) on the dev chain,
+		// installing the (insecure, devnet) shielded-transfer verifying key into
+		// genesis so shielded transactions work immediately after launch.
+		if ctx.Bool(DeveloperPrivacyFlag.Name) {
+			if err := core.EnablePrivacyDevnet(cfg.Genesis); err != nil {
+				Fatalf("Failed to enable developer privacy mode: %v", err)
+			}
+			log.Warn("Developer privacy mode enabled: shielded transactions use an INSECURE devnet trusted setup")
+		}
 
 		// If a datadir is specified, ensure that any preexisting chain in that location
 		// has a configuration that is compatible with dev mode: it must be merged at genesis.

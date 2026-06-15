@@ -27,7 +27,7 @@ import (
 // TestPrivacyAPIStealthRoundTrip checks that an address generated via the RPC API
 // can be detected via the RPC API by its intended recipient.
 func TestPrivacyAPIStealthRoundTrip(t *testing.T) {
-	api := NewPrivacyAPI()
+	api := NewPrivacyAPI(nil)
 
 	spend, _ := crypto.GenerateKey()
 	view, _ := crypto.GenerateKey()
@@ -60,7 +60,7 @@ func TestPrivacyAPIStealthRoundTrip(t *testing.T) {
 // TestPrivacyAPIPedersenCommit checks the RPC commitment matches a direct
 // computation and is 64 bytes.
 func TestPrivacyAPIPedersenCommit(t *testing.T) {
-	api := NewPrivacyAPI()
+	api := NewPrivacyAPI(nil)
 	out, err := api.PedersenCommit(hexutil.Big(*big.NewInt(123)), hexutil.Big(*big.NewInt(456)))
 	if err != nil {
 		t.Fatalf("PedersenCommit: %v", err)
@@ -73,7 +73,7 @@ func TestPrivacyAPIPedersenCommit(t *testing.T) {
 // TestPrivacyAPIRejectsBadKeys checks input validation surfaces errors rather than
 // panicking.
 func TestPrivacyAPIRejectsBadKeys(t *testing.T) {
-	api := NewPrivacyAPI()
+	api := NewPrivacyAPI(nil)
 	if _, err := api.GenerateStealthAddress(StealthMetaAddressArgs{
 		SpendingPubKey: []byte{0x01},
 		ViewingPubKey:  []byte{0x02},

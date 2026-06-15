@@ -101,8 +101,40 @@ a full sync of a third node. Unit + state tests green; `go test ./core/...`.
 | 4. Fork gating — `Privacy1Time` / `ChainConfig.IsPrivacy1` / `Rules.IsPrivacy1` | ✅ **Done** — `params/config.go` |
 | 1+2+4 integration — state-transition settlement (`settleShielded`) and txpool gating | ✅ **Done** — `core/state_transition.go`, `core/txpool/validation.go`; end-to-end shield→unshield→double-spend test |
 | 5. Production shielded-transfer circuit — 2-in/2-out MiMC circuit enforcing Merkle membership, nullifier derivation, commitment well-formedness, value conservation and range checks; native prover + wallet helpers | ✅ **Done** — `core/privacy/circuit`; soundness tests reject value inflation, forged nullifiers/commitments and non-member spends |
-| 5. Trusted-setup ceremony (real multi-party SRS) | ⏳ **Required before any value-bearing network** — only a devnet (insecure, in-process) SRS exists today, loudly labelled in `circuit.DevnetSetup` |
-| 5. RPC helpers (build/scan/prove shielded txs) and wallet UX | ⏳ Next |
+| Devnet wiring — deterministic devnet keys, genesis VK install, `geth --dev.privacy`, RPC | ✅ **Done** — `core.EnablePrivacyDevnet`, `pool.GenesisStorage`, `--dev.privacy`, `privacy_poolInfo`/`privacy_buildShield`; full block-processing integration test |
+| 5. Trusted-setup **ceremony** (real multi-party SRS) | ⏳ **Required before any value-bearing network** — the devnet SRS is deterministic but insecure (public seed), loudly labelled in `circuit.DevnetSetup` |
+| 5. Wallet note-scanning / spend-side RPC (membership requires a wallet note DB) | ⏳ Next |
+
+### Devnet operation
+
+`geth --dev --dev.privacy` brings up a developer chain with Privacy Phase 1 active
+from genesis and the shielded-transfer verifying key installed in the pool's
+genesis state. Wallets/tooling use:
+
+- `privacy_poolInfo` → current anchor (root) and leaf count;
+- `privacy_buildShield` → an unsigned, proven shield transaction plus the created
+  note's secret (the caller signs with the fee-payer key and submits via
+  `eth_sendRawTransaction`);
+- the `core/privacy/circuit` package directly for spend/transfer proving (which
+  needs the wallet's own note set and Merkle tree).
+
+The setup keys are **deterministic** (fixed public seed), so every node and prover
+derives the identical proving/verifying keys — the property that lets a multi-node
+devnet verify each other's proofs.
+
+### Honest status of every privacy component (audit)
+
+| Component | Status |
+| --- | --- |
+| Shielded-transfer circuit (membership, nullifier, balance, range) | Real; soundness-tested |
+| Nullifier `nf = MiMC(ask, cm)` | Real; binds to the full note (fixed an earlier `MiMC(ask, rho)` collision foot-gun) |
+| Shielded pool (MiMC tree, nullifier set, recent roots, VK registry) | Real; state-backed; root cross-checked against prover tree |
+| Consensus settlement + fork gating + txpool gating | Real; block-processing integration-tested |
+| EIP-5564 stealth addresses | Real; now hashes the compressed point per EIP-5564 (was x-coordinate only) |
+| Pedersen commitments + `PEDERSEN_COMMIT/ADD`/`PLONK_VERIFY` precompiles | Real, general-purpose; **not** load-bearing for the shielded flow (which uses MiMC + a direct verifier) |
+| Trusted setup | **Deterministic but insecure** (public seed); a real ceremony is the one remaining production blocker |
+| Dandelion++ (`p2p/dandelion`) | Real routing logic, **not wired** into the p2p broadcast path (opt-in module) |
+| Gas costs for shielded ops / precompiles | Real charging, **placeholder values** pending benchmarking |
 
 ### How a shielded transaction is processed (implemented)
 
