@@ -30,12 +30,14 @@ import (
 	"github.com/dchest/siphash"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	encbuf "github.com/ethereum/go-ethereum/core/privacy/encmempool"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/eth/fetcher"
+	encproto "github.com/ethereum/go-ethereum/eth/protocols/encmempool"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -113,6 +115,7 @@ type handlerConfig struct {
 
 	DandelionEnabled bool             // Whether Dandelion++ network-origin privacy is enabled
 	Dandelion        dandelion.Config // Dandelion++ tuning parameters (used when enabled)
+	EncryptedMempool bool             // Whether the encrypted-mempool propagation layer is enabled
 }
 
 type handler struct {
@@ -145,6 +148,13 @@ type handler struct {
 	dandelionPeerLock sync.RWMutex
 	churn             *churnTracker // stem-peer disconnection tracker (eclipse detection)
 	lastEclipseLog    atomic.Int64  // unix-nanos of last eclipse warning (rate limit)
+
+	// Encrypted mempool (Phase 1). encPool is nil when the feature is off. It
+	// buffers and gossips opaque threshold-encrypted envelopes; decryption and
+	// inclusion are handled by the committee at block-building time.
+	encPool     *encbuf.Pool
+	encPeers    map[enode.ID]*encproto.Peer
+	encPeerLock sync.RWMutex
 
 	requiredBlocks map[uint64]common.Hash
 
@@ -214,6 +224,15 @@ func newHandler(config *handlerConfig) (*handler, error) {
 			"stemprob", config.Dandelion.StemProbability,
 			"epoch", config.Dandelion.EpochDuration,
 			"embargo", config.Dandelion.EmbargoBase)
+	}
+
+	// Enable the encrypted-mempool propagation layer if requested. This buffers and
+	// gossips opaque threshold-encrypted envelopes; committee decryption and block
+	// inclusion are a later stage, so no plaintext is handled here.
+	if config.EncryptedMempool {
+		h.encPool = encbuf.NewPool(encPoolMax)
+		h.encPeers = make(map[enode.ID]*encproto.Peer)
+		log.Info("Encrypted-mempool propagation enabled (ciphertext gossip; committee decryption and inclusion are a later stage)")
 	}
 	return h, nil
 }

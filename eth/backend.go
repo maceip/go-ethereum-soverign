@@ -46,6 +46,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/eth/gasprice"
 	dleproto "github.com/ethereum/go-ethereum/eth/protocols/dandelion"
+	encproto "github.com/ethereum/go-ethereum/eth/protocols/encmempool"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/eth/tracers"
@@ -370,6 +371,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 		DandelionEnabled: dandelionActive,
 		Dandelion:        config.Dandelion,
+		// The encrypted-mempool propagation layer is part of the privacy profile.
+		EncryptedMempool: chainConfig.Privacy1Time != nil,
 	}); err != nil {
 		return nil, err
 	}
@@ -479,6 +482,11 @@ func (s *Ethereum) Protocols() []p2p.Protocol {
 	// can be relayed to capable peers.
 	if s.handler.dandelion != nil {
 		protos = append(protos, dleproto.MakeProtocols((*dandelionHandler)(s.handler))...)
+	}
+	// Advertise the encrypted-mempool propagation sub-protocol when the privacy
+	// profile is active, so threshold-encrypted envelopes can be gossiped.
+	if s.handler.encPool != nil {
+		protos = append(protos, encproto.MakeProtocols((*encmempoolHandler)(s.handler))...)
 	}
 	return protos
 }

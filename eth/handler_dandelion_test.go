@@ -17,6 +17,8 @@
 package eth
 
 import (
+	"bytes"
+	"crypto/rand"
 	"math/big"
 	"net"
 	"testing"
@@ -25,10 +27,13 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
+	encbuf "github.com/ethereum/go-ethereum/core/privacy/encmempool"
+	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	dleproto "github.com/ethereum/go-ethereum/eth/protocols/dandelion"
+	encproto "github.com/ethereum/go-ethereum/eth/protocols/encmempool"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/dandelion"
@@ -61,6 +66,7 @@ func buildDandelionHandler(t *testing.T, cfg dandelion.Config) *testHandler {
 		BloomCache:       1,
 		DandelionEnabled: true,
 		Dandelion:        cfg,
+		EncryptedMempool: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create dandelion handler: %v", err)
@@ -145,6 +151,32 @@ func connectDleBlackHole(relay *testHandler, holeNode byte) func() {
 		hp.Close()
 		<-done
 	}
+}
+
+// connectEnc wires an `enc` (encrypted-mempool) connection between a and b.
+func connectEnc(a, b *testHandler, nodeA, nodeB byte) func() {
+	ap, bp := p2p.MsgPipe()
+	aPeer := encproto.NewPeer(encproto.ENC1, p2p.NewPeerPipe(enode.ID{nodeB}, "", nil, ap), ap)
+	bPeer := encproto.NewPeer(encproto.ENC1, p2p.NewPeerPipe(enode.ID{nodeA}, "", nil, bp), bp)
+
+	go (*encmempoolHandler)(a.handler).RunPeer(aPeer, func(peer *encproto.Peer) error {
+		defer peer.Close()
+		return encproto.Handle((*encmempoolHandler)(a.handler), peer)
+	})
+	go (*encmempoolHandler)(b.handler).RunPeer(bPeer, func(peer *encproto.Peer) error {
+		defer peer.Close()
+		return encproto.Handle((*encmempoolHandler)(b.handler), peer)
+	})
+	return func() {
+		ap.Close()
+		bp.Close()
+	}
+}
+
+func encPeerCount(h *handler) int {
+	h.encPeerLock.RLock()
+	defer h.encPeerLock.RUnlock()
+	return len(h.encPeers)
 }
 
 func dlePeerCount(h *handler) int {
@@ -463,6 +495,64 @@ func TestOriginTracker(t *testing.T) {
 	}
 	if live == 0 {
 		t.Fatal("origin tracker evicted everything; most recent marks should survive")
+	}
+}
+
+// TestEncryptedMempoolPropagation checks that a threshold-encrypted envelope
+// submitted at one node propagates across the `enc` subgraph to every other node's
+// encrypted-mempool buffer, while only ciphertext ever crosses the wire.
+func TestEncryptedMempoolPropagation(t *testing.T) {
+	cfg := dandelion.DefaultConfig()
+	source := buildDandelionHandler(t, cfg)
+	defer source.close()
+
+	const numSinks = 5
+	sinks := make([]*testHandler, numSinks)
+	for i := 0; i < numSinks; i++ {
+		sinks[i] = buildDandelionHandler(t, cfg)
+		defer sinks[i].close()
+		defer connectEnc(source, sinks[i], 100, byte(i+1))()
+	}
+	waitFor(t, "enc peers", func() bool { return encPeerCount(source.handler) == numSinks })
+
+	// Build a real threshold-encrypted envelope.
+	pk, _, _, err := threshold.DealerSetup(2, 3, rand.Reader)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	plaintext := []byte("private inner transaction")
+	ct, err := threshold.Encrypt(pk, plaintext, rand.Reader)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	blob, _ := ct.Marshal()
+	env, err := encbuf.NewEnvelope(blob)
+	if err != nil {
+		t.Fatalf("envelope: %v", err)
+	}
+
+	if !source.handler.submitEncryptedEnvelope(env) {
+		t.Fatal("submit returned false for a fresh envelope")
+	}
+
+	// Every sink must buffer the envelope.
+	for i, sink := range sinks {
+		got := false
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if sink.handler.encPool.Has(env.ID()) {
+				got = true
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !got {
+			t.Fatalf("sink %d did not receive the encrypted envelope", i)
+		}
+		// What propagated is only ciphertext, never the plaintext.
+		if e := sink.handler.encPool.Get(env.ID()); e != nil && bytes.Contains(e.Ciphertext, plaintext) {
+			t.Fatalf("sink %d received plaintext in the envelope", i)
+		}
 	}
 }
 
