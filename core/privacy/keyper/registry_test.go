@@ -17,6 +17,7 @@
 package keyper
 
 import (
+	"bytes"
 	"crypto/rand"
 	"testing"
 
@@ -24,7 +25,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 )
 
-// mapState is an in-memory StateReader for a single account.
 type mapState struct {
 	addr    common.Address
 	storage map[common.Hash]common.Hash
@@ -39,9 +39,9 @@ func (m *mapState) GetState(addr common.Address, key common.Hash) common.Hash {
 
 var registryAddr = common.HexToAddress("0x00000000000000000000000000000000000a11ce")
 
-func TestRegistryRoundTrip(t *testing.T) {
-	const tt, n = 3, 5
-	eon, _, _, err := threshold.DealerSetup(tt, n, rand.Reader)
+func TestRegistryServesUsableCommitteeConfig(t *testing.T) {
+	const thresholdSize, members = 3, 5
+	eon, shares, _, err := threshold.DealerSetup(thresholdSize, members, rand.Reader)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -52,16 +52,18 @@ func TestRegistryRoundTrip(t *testing.T) {
 		common.HexToAddress("0x4444444444444444444444444444444444444444"),
 		common.HexToAddress("0x5555555555555555555555555555555555555555"),
 	}
-
-	storage, err := BuildRegistryStorage(tt, eon, keypers)
+	storage, err := BuildRegistryStorage(thresholdSize, eon, keypers)
 	if err != nil {
 		t.Fatalf("build storage: %v", err)
 	}
-	st := &mapState{addr: registryAddr, storage: storage}
 	reg := NewRegistry(registryAddr)
+	st := &mapState{addr: registryAddr, storage: storage}
 
-	if got := reg.Threshold(st); got != tt {
-		t.Fatalf("threshold = %d, want %d", got, tt)
+	if !reg.Configured(st) {
+		t.Fatal("registry should report configured")
+	}
+	if got := reg.Threshold(st); got != thresholdSize {
+		t.Fatalf("threshold = %d, want %d", got, thresholdSize)
 	}
 	gotKeypers := reg.Keypers(st)
 	if len(gotKeypers) != len(keypers) {
@@ -69,79 +71,41 @@ func TestRegistryRoundTrip(t *testing.T) {
 	}
 	for i := range keypers {
 		if gotKeypers[i] != keypers[i] {
-			t.Fatalf("keyper[%d] = %s, want %s", i, gotKeypers[i].Hex(), keypers[i].Hex())
+			t.Fatalf("keyper[%d] = %s, want %s", i, gotKeypers[i], keypers[i])
 		}
 	}
-	gotEon, err := reg.EonKey(st)
+	pk, err := reg.EonKey(st)
 	if err != nil {
 		t.Fatalf("eon key: %v", err)
 	}
-	// The eon key read from the registry must encrypt to the same committee: a
-	// ciphertext made with it decrypts with the committee's shares.
-	want, _ := eon.Marshal()
-	got, _ := gotEon.Marshal()
-	if string(want) != string(got) {
-		t.Fatal("eon key round-trip mismatch")
-	}
-	if !reg.Configured(st) {
-		t.Fatal("registry should report configured")
-	}
-}
-
-// TestRegistryEonKeyUsable checks the registry-served eon key actually works for
-// threshold encryption end to end.
-func TestRegistryEonKeyUsable(t *testing.T) {
-	const tt, n = 2, 3
-	eon, shares, _, err := threshold.DealerSetup(tt, n, rand.Reader)
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	keypers := []common.Address{
-		common.HexToAddress("0xaa"), common.HexToAddress("0xbb"), common.HexToAddress("0xcc"),
-	}
-	storage, err := BuildRegistryStorage(tt, eon, keypers)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	st := &mapState{addr: registryAddr, storage: storage}
-	reg := NewRegistry(registryAddr)
-
-	pk, err := reg.EonKey(st)
-	if err != nil {
-		t.Fatalf("eon: %v", err)
-	}
-	ct, err := threshold.Encrypt(pk, []byte("hello committee"), rand.Reader)
+	plaintext := []byte("hello committee")
+	ct, err := threshold.Encrypt(pk, plaintext, rand.Reader)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	msg, err := threshold.Combine(tt, ct, []*threshold.DecryptionShare{
-		shares[0].Decrypt(ct), shares[1].Decrypt(ct),
+	got, err := threshold.Combine(thresholdSize, ct, []*threshold.DecryptionShare{
+		shares[0].Decrypt(ct),
+		shares[1].Decrypt(ct),
+		shares[2].Decrypt(ct),
 	})
 	if err != nil {
 		t.Fatalf("combine: %v", err)
 	}
-	if string(msg) != "hello committee" {
-		t.Fatalf("got %q", msg)
+	if !bytes.Equal(got, plaintext) {
+		t.Fatalf("recovered %q, want %q", got, plaintext)
 	}
-}
 
-func TestRegistryUnconfigured(t *testing.T) {
-	st := &mapState{addr: registryAddr, storage: map[common.Hash]common.Hash{}}
-	reg := NewRegistry(registryAddr)
-	if reg.Configured(st) {
-		t.Fatal("empty registry should not be configured")
+	empty := &mapState{addr: registryAddr, storage: map[common.Hash]common.Hash{}}
+	if reg.Configured(empty) {
+		t.Fatal("empty registry reported configured")
 	}
-	if _, err := reg.EonKey(st); err != ErrNoEonKey {
-		t.Fatalf("eon key on empty registry: err = %v, want %v", err, ErrNoEonKey)
+	if _, err := reg.EonKey(empty); err != ErrNoEonKey {
+		t.Fatalf("empty registry eon key err = %v, want %v", err, ErrNoEonKey)
 	}
-}
-
-func TestBuildRegistryBadParams(t *testing.T) {
-	eon, _, _, _ := threshold.DealerSetup(2, 3, rand.Reader)
-	if _, err := BuildRegistryStorage(0, eon, []common.Address{{1}}); err == nil {
-		t.Fatal("t=0 accepted")
+	if _, err := BuildRegistryStorage(0, eon, keypers); err == nil {
+		t.Fatal("accepted zero threshold")
 	}
-	if _, err := BuildRegistryStorage(3, eon, []common.Address{{1}}); err == nil {
-		t.Fatal("t>n accepted")
+	if _, err := BuildRegistryStorage(len(keypers)+1, eon, keypers); err == nil {
+		t.Fatal("accepted threshold greater than keyper count")
 	}
 }

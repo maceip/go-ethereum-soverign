@@ -26,95 +26,73 @@ import (
 	bn256 "github.com/ethereum/go-ethereum/crypto/bn256/cloudflare"
 )
 
-// TestDKGProducesWorkingCommittee runs a full DKG and checks that the resulting
-// committee key encrypts and that any t-of-n DKG shares decrypt — i.e. the DKG is
-// a drop-in trustless replacement for the trusted dealer.
-func TestDKGProducesWorkingCommittee(t *testing.T) {
-	const tt, n = 3, 5
-	eon, shares, vks, err := RunDKG(tt, n, rand.Reader)
+func TestDKGProducesVerifiableThresholdCommittee(t *testing.T) {
+	const thresholdSize, members = 3, 5
+	eon, shares, vks, err := RunDKG(thresholdSize, members, rand.Reader)
 	if err != nil {
 		t.Fatalf("dkg: %v", err)
 	}
-	if len(shares) != n || len(vks) != n {
-		t.Fatalf("got %d shares, %d vks, want %d", len(shares), len(vks), n)
+	if len(shares) != members || len(vks) != members {
+		t.Fatalf("got %d shares, %d verification keys, want %d", len(shares), len(vks), members)
 	}
-
-	msg := []byte("decrypted only by a keyper threshold")
-	ct, err := threshold.Encrypt(eon, msg, rand.Reader)
+	plaintext := []byte("decrypted only by a keyper threshold")
+	ct, err := threshold.Encrypt(eon, plaintext, rand.Reader)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	// Multiple distinct t-subsets of DKG shares must all decrypt.
-	for _, sub := range [][]int{{0, 1, 2}, {1, 3, 4}, {0, 2, 4}} {
-		ds := make([]*threshold.DecryptionShare, 0, tt)
-		for _, i := range sub {
-			ds = append(ds, shares[i].Decrypt(ct))
+	for _, subset := range [][]int{{0, 1, 2}, {1, 3, 4}, {0, 2, 4}} {
+		var dshares []*threshold.DecryptionShare
+		for _, i := range subset {
+			share := shares[i].Decrypt(ct)
+			if !threshold.VerifyShare(vks[i], ct, share) {
+				t.Fatalf("share %d failed verification", i)
+			}
+			dshares = append(dshares, share)
 		}
-		got, err := threshold.Combine(tt, ct, ds)
+		got, err := threshold.Combine(thresholdSize, ct, dshares)
 		if err != nil {
-			t.Fatalf("combine %v: %v", sub, err)
+			t.Fatalf("combine %v: %v", subset, err)
 		}
-		if !bytes.Equal(got, msg) {
-			t.Fatalf("combine %v: got %q", sub, got)
+		if !bytes.Equal(got, plaintext) {
+			t.Fatalf("combine %v recovered %q, want %q", subset, got, plaintext)
 		}
 	}
-
-	// DKG verification keys must match the DKG shares.
-	for i := range shares {
-		if !threshold.VerifyShare(vks[i], ct, shares[i].Decrypt(ct)) {
-			t.Fatalf("dkg verification key %d does not match its share", i)
-		}
+	if _, err := threshold.Combine(thresholdSize, ct, []*threshold.DecryptionShare{
+		shares[0].Decrypt(ct),
+		shares[1].Decrypt(ct),
+	}); err == nil {
+		t.Fatal("decrypted with fewer than threshold DKG shares")
 	}
 }
 
-// TestDKGThreshold checks t-1 DKG shares cannot decrypt.
-func TestDKGThreshold(t *testing.T) {
-	const tt, n = 3, 5
-	eon, shares, _, err := RunDKG(tt, n, rand.Reader)
-	if err != nil {
-		t.Fatalf("dkg: %v", err)
-	}
-	ct, err := threshold.Encrypt(eon, []byte("secret"), rand.Reader)
-	if err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
-	ds := []*threshold.DecryptionShare{shares[0].Decrypt(ct), shares[1].Decrypt(ct)}
-	if _, err := threshold.Combine(tt, ct, ds); err == nil {
-		t.Fatal("decrypted with fewer than t DKG shares")
-	}
-}
-
-// TestFeldmanVerifyDetectsBadShare checks the Feldman check accepts honest shares
-// and rejects a tampered one (a cheating dealer).
-func TestFeldmanVerifyDetectsBadShare(t *testing.T) {
-	const tt, n = 2, 4
-	p, err := NewParticipant(1, tt, n, rand.Reader)
+func TestDKGRejectsInvalidSharesAndAggregates(t *testing.T) {
+	const thresholdSize, members = 2, 4
+	p, err := NewParticipant(1, thresholdSize, members, rand.Reader)
 	if err != nil {
 		t.Fatalf("participant: %v", err)
 	}
-	comms := p.Commitments()
-	for j := uint32(1); j <= n; j++ {
-		if !VerifyShare(comms, j, p.Share(j)) {
-			t.Fatalf("honest share for %d failed verification", j)
+	commitments := p.Commitments()
+	for j := uint32(1); j <= members; j++ {
+		if !VerifyShare(commitments, j, p.Share(j)) {
+			t.Fatalf("honest share for member %d failed verification", j)
 		}
 	}
-	// Tamper with a share: must be rejected.
-	bad := new(big.Int).Add(p.Share(2), big.NewInt(1))
-	if VerifyShare(comms, 2, bad) {
+	badShare := new(big.Int).Add(p.Share(2), big.NewInt(1))
+	if VerifyShare(commitments, 2, badShare) {
 		t.Fatal("tampered share passed Feldman verification")
 	}
-}
-
-// TestDKGEonKeyAggregates checks AggregateEonKey combines per-keyper commitments
-// into a usable committee key (no single keyper holds the master secret).
-func TestDKGEonKeyAggregates(t *testing.T) {
-	const tt, n = 2, 3
-	raw := make([][]*bn256.G1, n)
-	for i := 0; i < n; i++ {
-		p, err := NewParticipant(uint32(i+1), tt, n, rand.Reader)
+	if _, err := AggregateEonKey(nil); err == nil {
+		t.Fatal("aggregate accepted empty commitments")
+	}
+	if _, err := AggregateEonKey([][]*bn256.G1{{}}); err == nil {
+		t.Fatal("aggregate accepted an empty participant commitment")
+	}
+	raw := make([][]*bn256.G1, members)
+	for i := 0; i < members; i++ {
+		p, err := NewParticipant(uint32(i+1), thresholdSize, members, rand.Reader)
 		if err != nil {
-			t.Fatalf("participant: %v", err)
+			t.Fatalf("participant %d: %v", i+1, err)
 		}
 		raw[i] = p.Commitments()
 	}
@@ -123,9 +101,6 @@ func TestDKGEonKeyAggregates(t *testing.T) {
 		t.Fatalf("aggregate: %v", err)
 	}
 	if eon == nil || eon.P == nil {
-		t.Fatal("nil eon key")
-	}
-	if _, err := AggregateEonKey(nil); err == nil {
-		t.Fatal("aggregate accepted empty input")
+		t.Fatal("aggregate returned nil eon key")
 	}
 }

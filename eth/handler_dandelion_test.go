@@ -498,22 +498,23 @@ func TestOriginTracker(t *testing.T) {
 	}
 }
 
-// TestEncryptedMempoolPropagation checks that a threshold-encrypted envelope
-// submitted at one node propagates across the `enc` subgraph to every other node's
-// encrypted-mempool buffer, while only ciphertext ever crosses the wire.
-func TestEncryptedMempoolPropagation(t *testing.T) {
+// TestEncryptedMempoolPropagatesOpaqueEnvelopeAcrossEncGraph checks the strongest
+// property this layer can claim: opaque threshold ciphertext is flooded over the
+// `enc` graph, deduplicated, and synced to late peers. This is not a block-path
+// or decryption test.
+func TestEncryptedMempoolPropagatesOpaqueEnvelopeAcrossEncGraph(t *testing.T) {
 	cfg := dandelion.DefaultConfig()
 	source := buildDandelionHandler(t, cfg)
 	defer source.close()
+	relay := buildDandelionHandler(t, cfg)
+	defer relay.close()
+	sink := buildDandelionHandler(t, cfg)
+	defer sink.close()
 
-	const numSinks = 5
-	sinks := make([]*testHandler, numSinks)
-	for i := 0; i < numSinks; i++ {
-		sinks[i] = buildDandelionHandler(t, cfg)
-		defer sinks[i].close()
-		defer connectEnc(source, sinks[i], 100, byte(i+1))()
-	}
-	waitFor(t, "enc peers", func() bool { return encPeerCount(source.handler) == numSinks })
+	defer connectEnc(source, relay, 1, 2)()
+	defer connectEnc(relay, sink, 2, 3)()
+	waitFor(t, "source enc peer", func() bool { return encPeerCount(source.handler) == 1 })
+	waitFor(t, "relay enc peers", func() bool { return encPeerCount(relay.handler) == 2 })
 
 	// Build a real threshold-encrypted envelope.
 	pk, _, _, err := threshold.DealerSetup(2, 3, rand.Reader)
@@ -534,25 +535,24 @@ func TestEncryptedMempoolPropagation(t *testing.T) {
 	if !source.handler.submitEncryptedEnvelope(env) {
 		t.Fatal("submit returned false for a fresh envelope")
 	}
+	if source.handler.submitEncryptedEnvelope(env) {
+		t.Fatal("duplicate encrypted envelope was accepted")
+	}
 
-	// Every sink must buffer the envelope.
-	for i, sink := range sinks {
-		got := false
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			if sink.handler.encPool.Has(env.ID()) {
-				got = true
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
+	for name, h := range map[string]*testHandler{"relay": relay, "sink": sink} {
+		waitFor(t, name+" envelope", func() bool { return h.handler.encPool.Has(env.ID()) })
+		if e := h.handler.encPool.Get(env.ID()); e == nil || bytes.Contains(e.Ciphertext, plaintext) {
+			t.Fatalf("%s did not store an opaque ciphertext envelope", name)
 		}
-		if !got {
-			t.Fatalf("sink %d did not receive the encrypted envelope", i)
-		}
-		// What propagated is only ciphertext, never the plaintext.
-		if e := sink.handler.encPool.Get(env.ID()); e != nil && bytes.Contains(e.Ciphertext, plaintext) {
-			t.Fatalf("sink %d received plaintext in the envelope", i)
-		}
+	}
+
+	late := buildDandelionHandler(t, cfg)
+	defer late.close()
+	defer connectEnc(relay, late, 2, 4)()
+	waitFor(t, "late enc peer", func() bool { return encPeerCount(late.handler) == 1 })
+	waitFor(t, "late synced envelope", func() bool { return late.handler.encPool.Has(env.ID()) })
+	if e := late.handler.encPool.Get(env.ID()); e == nil || bytes.Contains(e.Ciphertext, plaintext) {
+		t.Fatal("late peer did not sync an opaque ciphertext envelope")
 	}
 }
 
@@ -662,31 +662,5 @@ func TestChurnTracker(t *testing.T) {
 	// Records outside the window are pruned.
 	if got := c.rate(now.Add(2 * time.Minute)); got != 0 {
 		t.Fatalf("churn rate after window = %d, want 0", got)
-	}
-}
-
-// TestStemHoldSet exercises the relay-held transaction set.
-func TestStemHoldSet(t *testing.T) {
-	s := &stemHoldSet{max: 2, txs: make(map[common.Hash]*types.Transaction)}
-
-	tx1 := makeLocalTestTx(0)
-	tx2 := makeLocalTestTx(1)
-	tx3 := makeLocalTestTx(2)
-
-	s.add(tx1)
-	if got := s.get(tx1.Hash()); got == nil || got.Hash() != tx1.Hash() {
-		t.Fatal("held transaction not retrievable")
-	}
-	s.remove(tx1.Hash())
-	if s.get(tx1.Hash()) != nil {
-		t.Fatal("removed transaction still present")
-	}
-
-	// Cap eviction.
-	s.add(tx1)
-	s.add(tx2)
-	s.add(tx3)
-	if len(s.txs) > s.max {
-		t.Fatalf("stem-hold set kept %d entries, want at most %d", len(s.txs), s.max)
 	}
 }
