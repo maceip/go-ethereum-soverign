@@ -185,6 +185,80 @@ func TestEncryptedTxThroughRealMinerAndImport(t *testing.T) {
 	}
 }
 
+// TestEncryptedTxReorgSafety checks reorg/rebroadcast privacy semantics: when an
+// encrypted transaction is decrypted and included in a block, its envelope is NOT
+// dropped from the buffer until the inner transaction's nonce is actually consumed
+// on the canonical state. So if the block is reorged out (its nonce not consumed
+// canonically), the still-encrypted envelope remains buffered and can be
+// re-included on the new canonical chain — the plaintext only ever existed inside
+// the orphaned block, never in the buffer or on the wire.
+func TestEncryptedTxReorgSafety(t *testing.T) {
+	const tt, n = 3, 5
+	const blockEpoch = 1
+
+	senderKey, _ := crypto.GenerateKey()
+	sender := crypto.PubkeyToAddress(senderKey.PublicKey)
+
+	keypers, mpk, vks, err := keypernet.Bootstrap(tt, n, rand.Reader)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	gspec := newBlockPathGenesis(t, sender, tt, mpk)
+	signer := types.LatestSigner(gspec.Config)
+	innerTx, _ := types.SignTx(types.NewTx(&types.DynamicFeeTx{
+		ChainID: gspec.Config.ChainID, Nonce: 0, GasTipCap: big.NewInt(0),
+		GasFeeCap: big.NewInt(params.InitialBaseFee), Gas: 21000, To: &common.Address{0xbe, 0xef}, Value: big.NewInt(1000),
+	}), signer, senderKey)
+	rawTx, _ := innerTx.MarshalBinary()
+	ct, _ := ibe.Encrypt(mpk, blockEpoch, rawTx, rand.Reader)
+	ctBlob, _ := ct.Marshal()
+	env, _ := encbuf.NewEnvelope(ctBlob)
+	encPool := encbuf.NewPool(16)
+	encPool.Add(env)
+
+	provider := keypernet.NewProvider(keypernet.NewInmemTransport(keypers, ^uint64(0)), vks)
+	src := newEncryptedTxSource(encPool, encRegistryAddr, provider, gspec.Config)
+
+	chain, err := core.NewBlockChain(rawdb.NewMemoryDatabase(), gspec, beacon.New(ethash.NewFaker()), nil)
+	if err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+	defer chain.Stop()
+	header := &types.Header{Number: big.NewInt(blockEpoch), Time: chain.CurrentBlock().Time + 12}
+
+	// Decrypt for a block while the sender's nonce is still 0 (tx not yet consumed
+	// on canonical state, e.g. its block was just built or has been reorged out).
+	notConsumed := &mockAcctState{regAddr: encRegistryAddr, storage: registryStorageFromGenesis(t, gspec), nonces: map[common.Address]uint64{sender: 0}}
+	got := src.decrypt(header, notConsumed)
+	if len(got) != 1 {
+		t.Fatalf("decrypted %d, want the includable tx", len(got))
+	}
+	if !encPool.Has(env.ID()) {
+		t.Fatal("envelope was dropped on inclusion; a reorg would lose it. It must stay buffered until canonically consumed")
+	}
+
+	// Once the inner transaction's nonce is consumed on canonical state, the
+	// envelope is no longer needed and is dropped.
+	consumed := &mockAcctState{regAddr: encRegistryAddr, storage: notConsumed.storage, nonces: map[common.Address]uint64{sender: 1}}
+	if got := src.decrypt(header, consumed); len(got) != 0 {
+		t.Fatalf("re-included an already-consumed tx (%d)", len(got))
+	}
+	if encPool.Has(env.ID()) {
+		t.Fatal("envelope retained after its nonce was canonically consumed")
+	}
+}
+
+// registryStorageFromGenesis extracts the keyper registry storage installed in the
+// genesis alloc at encRegistryAddr.
+func registryStorageFromGenesis(t *testing.T, gspec *core.Genesis) map[common.Hash]common.Hash {
+	t.Helper()
+	acct, ok := gspec.Alloc[encRegistryAddr]
+	if !ok {
+		t.Fatal("no registry account in genesis")
+	}
+	return acct.Storage
+}
+
 // TestEncryptedTxCommitteeUnavailable checks the committee-unavailable fallback:
 // when the keyper committee has not released the epoch key, the encrypted
 // transaction is not included and its envelope stays buffered for a later block,

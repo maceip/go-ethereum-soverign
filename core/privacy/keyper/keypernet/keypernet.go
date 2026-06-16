@@ -43,11 +43,16 @@ import (
 	"github.com/ethereum/go-ethereum/core/privacy/keyper"
 	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 )
 
 // ErrInsufficientShares is returned when fewer than the threshold of valid epoch-key
 // shares could be collected from the keyper set.
 var ErrInsufficientShares = errors.New("keypernet: insufficient epoch-key shares")
+
+// rejectedShareMeter counts epoch-key shares rejected by verification — evidence of
+// a malformed or dishonest keyper, surfaced for accountability.
+var rejectedShareMeter = metrics.NewRegisteredMeter("keyper/rejected_shares", nil)
 
 // Keyper is a single committee member. It holds one DKG secret share and the
 // matching public verification key, and releases a verifiable epoch-key share for a
@@ -143,7 +148,10 @@ func verifyEpochShares(vks map[uint32]*threshold.VerificationKey, epoch uint64, 
 		}
 		vk := vks[s.Index]
 		if vk == nil || !ibe.VerifyEpochShare(vk, epoch, s) {
-			log.Debug("keypernet: rejecting invalid epoch-key share", "index", s.Index, "epoch", epoch)
+			// Accountability: a share that does not verify is evidence of a
+			// malformed or dishonest keyper. Record it loudly and attributably.
+			rejectedShareMeter.Mark(1)
+			log.Warn("keypernet: rejecting invalid epoch-key share from keyper", "keyper", s.Index, "epoch", epoch)
 			continue
 		}
 		seen[s.Index] = struct{}{}

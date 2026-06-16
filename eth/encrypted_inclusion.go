@@ -46,7 +46,14 @@ type encryptedTxSource struct {
 	chainConfig *params.ChainConfig
 }
 
-var encDecryptedMeter = metrics.NewRegisteredMeter("eth/encmempool/decrypted", nil)
+var (
+	// encDecryptedMeter counts envelopes decrypted and included at block build.
+	encDecryptedMeter = metrics.NewRegisteredMeter("eth/encmempool/decrypted", nil)
+	// encUndecryptableMeter counts envelopes that were due for the block but could
+	// not be decrypted (the committee had not released the epoch key) — the
+	// committee-unavailable fallback, surfaced for observability.
+	encUndecryptableMeter = metrics.NewRegisteredMeter("eth/encmempool/undecryptable", nil)
+)
 
 // accountState is the slice of state the source needs: the registry storage and
 // account nonces. *state.StateDB satisfies it.
@@ -101,6 +108,12 @@ func (s *encryptedTxSource) decrypt(header *types.Header, st accountState) []*ty
 	}
 
 	decrypted := encbuf.Decrypt(due, t, s.provider)
+	if undecryptable := len(due) - len(decrypted); undecryptable > 0 {
+		// Due envelopes the committee has not unlocked stay buffered for a later
+		// block; record the gap so the fallback is observable.
+		encUndecryptableMeter.Mark(int64(undecryptable))
+		log.Debug("Encrypted-mempool envelopes due but not decryptable", "count", undecryptable, "epoch", blockEpoch)
+	}
 	signer := types.LatestSigner(s.chainConfig)
 
 	out := make([]*types.Transaction, 0, len(decrypted))
