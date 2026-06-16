@@ -206,20 +206,44 @@ proof does not validate a transaction whose public fields were altered.
 
 ---
 
-## Phase 2 — Encrypted mempool & fair ordering (anti-MEV, anti-surveillance)
+## Encrypted mempool (Phase 1) & fair ordering (later)
 
-**Goal.** Transaction *content and ordering* are protected before inclusion,
-neutralising front-running/sandwiching. Dandelion++ origin privacy remains Phase 1
-scope; see `shape.md`.
+**Goal.** Transaction *content* is protected before inclusion, neutralising
+front-running/sandwiching and surveillance of pending transactions. Per `shape.md`
+the encrypted mempool is a **Phase 1** item (threshold-encryption based,
+stage-able after Dandelion++); fair-ordering/PBS hooks are later-phase roadmap
+work. Dandelion++ origin privacy is the other Phase 1 network-privacy item.
 
 ### Workstreams
 
-1. **Encrypted mempool (Roadmap Ph.1 §2, Ph.4 §3).**
-   - Commit-reveal first: peers gossip a commitment to the tx; the payload is
-     revealed only at/after inclusion.
-   - Then threshold encryption: txs encrypted to a validator-set key, decrypted on
-     inclusion via a threshold scheme (Shamir). Inspired by Shutter Network. This
-     is the largest sub-project; stage it behind commit-reveal.
+1. **Encrypted mempool — Phase 1, threshold-encryption based (Roadmap Ph.1 §2).**
+   Per `shape.md`, this is Phase 1 (stage-able after Dandelion++) and is scoped
+   around threshold encryption — not a local-only wallet mode and not commit-reveal.
+   It is being built in honest, independently-tested stages:
+
+   - **Stage 1 — threshold cryptosystem (DONE).**
+     [`core/privacy/threshold`](core/privacy/threshold) implements a verifiable
+     hybrid threshold KEM/DEM over bn256: trusted-dealer (devnet) `(t,n)` setup,
+     `Encrypt` to a committee key, per-member decryption shares, pairing-based
+     share verification (so decryption-share abuse is detectable — the
+     accountability hook), and Lagrange `Combine`. Tested for correctness,
+     threshold (t-1 cannot decrypt), foreign-share rejection, share verifiability,
+     duplicate-index rejection, and serialization. Trusted-dealer setup is
+     devnet-only and clearly labelled, mirroring the shielded trusted-setup posture;
+     production requires a DKG.
+   - **Stage 2 — encrypted-tx envelope, mempool buffer, and propagation (NEXT).**
+     A ciphertext transaction envelope carrying a Stage-1 `Ciphertext`, a holding
+     buffer for still-encrypted pending txs, and a propagation path, with tests for
+     privacy of transactions that are never included.
+   - **Stage 3 — committee decryption and block inclusion.** Share collection at
+     inclusion time, proposer-side combination/decryption before execution,
+     inclusion/ordering rules, fallback when the committee is unavailable, and
+     accountability logging. This stage is consensus-adjacent and gated behind the
+     privacy fork.
+
+   Batched threshold encryption (USENIX Security 2024/2025) and BEAT-MEV are the
+   research directions to track for Stage 3 efficiency; the Stage 1 interfaces do
+   not preclude moving to a batched scheme.
 
 2. **Fair ordering & PBS hooks (Roadmap Ph.4 §3).**
    - Expose an ordering hook in the miner/builder path
