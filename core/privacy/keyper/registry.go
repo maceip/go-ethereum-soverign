@@ -15,10 +15,9 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 // Package keyper implements the on-chain keyper registry for the fork's encrypted
-// mempool (Phase 1, threshold-encryption based; shape.md). It is Stage 3a of the
-// encrypted-mempool work: the consensus-readable record of who the decryption
-// committee (the "keypers") are, their threshold, and the committee ("eon") public
-// key that users encrypt to.
+// mempool (threshold-encryption based; shape.md): the consensus-readable record of
+// who the decryption committee (the "keypers") are, their threshold, and the
+// committee ("eon") public key that users encrypt to.
 //
 // The registry is plain account storage at a reserved registry address, laid out
 // so an ordinary Solidity registry contract can write it and the execution client
@@ -32,11 +31,11 @@
 //
 // This package owns the layout and the read path, plus a genesis populator so a
 // devnet can install a committee. The keyper *network* (distributed key generation
-// for the eon key, and per-epoch decryption-key release) is a separate service and
-// a separate stage; this package deliberately does not implement DKG or key
-// release, and the eon key it serves is only as trustworthy as whatever produced
-// it. On a production network the registry must be populated by a real keyper-run
-// registration/DKG flow, never by a trusted dealer.
+// for the eon key, and per-epoch decryption-key release) is a separate service;
+// this package deliberately does not implement DKG or key release, and the eon key
+// it serves is only as trustworthy as whatever produced it. On a production network
+// the registry must be populated by a real keyper-run registration/DKG flow, never
+// by a trusted dealer.
 package keyper
 
 import (

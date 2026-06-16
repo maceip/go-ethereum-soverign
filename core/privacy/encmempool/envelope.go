@@ -14,21 +14,21 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-// Package encmempool implements the encrypted-mempool buffer and envelope for the
-// fork's Phase 1 encrypted-mempool work (shape.md: threshold-encryption based).
+// Package encmempool implements the encrypted-mempool buffer and envelope
+// (shape.md: threshold-encryption based encrypted mempool).
 //
 // A user threshold-encrypts an inner transaction to the committee key (see
 // core/privacy/threshold), wraps the ciphertext in an Envelope, and gossips the
 // envelope. Nodes buffer the still-encrypted envelopes in a Pool. The plaintext is
 // recovered only at inclusion time, when a threshold of committee members release
-// decryption shares (Stage 3). Until then — and forever, for transactions that are
-// never selected — only the opaque ciphertext is stored and propagated, giving the
+// decryption shares. Until then — and forever, for transactions that are never
+// selected — only the opaque ciphertext is stored and propagated, giving the
 // "privacy for non-included transactions" property that batched-threshold-
 // encryption research targets.
 //
-// This package is the Stage-2 buffer/envelope: it deliberately holds and moves
-// only ciphertext and never attempts decryption, so the privacy property is
-// structural. Decryption and block inclusion are Stage 3.
+// This buffer deliberately holds and moves only ciphertext and never attempts
+// decryption, so the privacy property is structural. Committee decryption and
+// block inclusion are handled elsewhere in the encrypted-mempool work.
 package encmempool
 
 import (

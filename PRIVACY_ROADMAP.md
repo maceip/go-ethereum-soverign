@@ -4,10 +4,11 @@ This fork begins implementing the client-side building blocks described in
 **"Ethereum Privacy: The Road to Self-Sovereignty"** by pcaversaccio
 ([discussion](https://ethresear.ch/t/ethereum-privacy-the-road-to-self-sovereignty/22115)).
 
-The full roadmap spans five phases of multi-year, multi-team protocol work. This
-changeset delivers a coherent, compiling, and tested vertical slice of the items
-that live naturally in the execution client, with each component built as reusable
-infrastructure the later phases compose on top of.
+The published roadmap uses phase labels to organise multi-year, multi-team
+protocol work. In this fork those labels are source-context only: per `shape.md`
+the privacy work here is **one atomic sprint**, not a sequence of internal phases,
+and it is either delivered as one coherent, compiling, tested production shape or
+called incomplete. This document describes the status of that sprint.
 
 ## What is implemented
 

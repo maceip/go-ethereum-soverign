@@ -5,6 +5,19 @@ This document is the alignment source for this fork. The attached roadmap,
 scope and phase placement. Existing implementation notes must be read through
 this document when there is any tension.
 
+## Atomic Sprint
+
+This fork does not have multiple implementation phases. The roadmap's phase
+labels are source-context only: they explain why a requirement belongs in scope,
+not permission to defer it into a later fork milestone.
+
+The current privacy overhaul is one atomic sprint. Dandelion++, confidential ETH,
+the opinionated privacy defaults, the required cleanup, and the documented
+research-aligned scope must land together as one coherent production shape or be
+called incomplete. Do not split the work into "Phase 1 now, Phase 2 later" inside
+this fork, and do not merge partial privacy paths that create a user-visible
+guarantee gap.
+
 ## Non-Negotiable Phase Alignment
 
 Dandelion++ is a core Phase 1 requirement. It is not a Phase 2 module, not an
@@ -282,8 +295,87 @@ on a production path with tests or clearly quarantined as non-production tooling
   wallet integration easier, but they do not substitute for protocol or network
   privacy.
 - Reject vague deferrals. If the attached roadmap places an item in Phase 1,
-  this fork must not move it to Phase 2 without explicitly documenting the
-  reason and the privacy gap it creates.
+  this fork must not move it out of the atomic sprint without explicitly
+  documenting the reason and the privacy gap it creates.
+
+## Current Review
+
+Review date: 2026-06-16.
+
+Reviewed remote state after `git fetch --all --prune`:
+
+- `origin/master` was unchanged at
+  `a9ab4ec9f7310741ff48d44d260339e348d769cc`.
+- `origin/claude/go-ethereum-client-mods-8sz2dl` contained Dandelion++ work in
+  `1091718a3 eth, p2p/dandelion: wire Dandelion++ network-origin privacy into
+  the live tx path`, followed by
+  `fae8f09e8 shape: record Dandelion++ design corrections from initial-design
+  review`.
+
+The remote work branch is useful, but it is not implementation-complete against
+this shape document and should not be treated as merge-ready without follow-up.
+
+Implemented on that branch:
+
+- `p2p/dandelion/dandelion.go` restores a Dandelion++ router package.
+- `eth/handler.go` and `eth/handler_dandelion.go` wire Dandelion routing into
+  the live transaction broadcast path.
+- `eth/api_backend.go` marks RPC `SendTx` submissions as local-origin.
+- Peer connect/disconnect refreshes the Dandelion eligible-peer set.
+- Inbound transaction gossip marks hashes as fluffed and cancels local embargo
+  state.
+- An embargo loop diffuses expired stemmed transactions as a safety fallback.
+- Tests cover one-hop stem delivery, remote transaction diffusion, embargo
+  fallback, router behavior, and basic origin-tracker behavior.
+
+Blocking gaps against this shape:
+
+- The branch adds normal user-facing opt-in and tuning flags:
+  `--dandelion`, `--dandelion.stemprob`, `--dandelion.epoch`,
+  `--dandelion.embargo`, and `--dandelion.embargojitter`. This conflicts with
+  the requirement that roadmap privacy works out of the box on supported privacy
+  networks and is not presented as a normal user preference.
+- The implementation is single-hop, not full Dandelion++. Stem relay uses the
+  ordinary eth transaction send path, so the receiving peer cannot identify the
+  transaction as stem-phase traffic and continue stemming it.
+- Local transactions can still fluff at the origin because the same stem/fluff
+  coin is applied at hop zero. Local-origin transactions should enter stem phase
+  whenever an eligible successor exists.
+- Local-origin tracking is consume-once and is fed by RPC `SendTx` only. It does
+  not persist across rebroadcasts and does not cover local wallet, miner,
+  journal-resurrected, or locally-resubmitted transactions.
+- Peer selection uses a single epoch successor. It does not implement at least
+  two deterministic per-epoch successors or hardening against churn and
+  successor monopolization.
+- Eclipse and connection-reset hardening is not implemented. Metrics cover stem,
+  fluff, embargo, and peer fallback, but not suspected eclipse pressure,
+  connection-reset pressure, or churn-based manipulation.
+- The branch's `shape.md` is based on an older document and drops the current
+  opinionated-defaults and 2024-2026 research sections. Any merge must preserve
+  the current `shape.md` content and add the Dandelion design corrections on top.
+- Encrypted mempool, batched threshold encryption, threshold accountability,
+  shielded-pool decoy scaling, source-of-funds compatibility proofs, and prover
+  orchestration remain document-level direction only. No implementation was found
+  for those items.
+
+Required before merge:
+
+- Rebase the Dandelion branch onto current `origin/master` and preserve this
+  document's latest requirements.
+- Replace normal user opt-in flags with opinionated network/profile defaults.
+  Any override must be clearly scoped as devnet, diagnostic, compatibility, or
+  emergency tooling.
+- Add an explicit stem-relay signal or subprotocol so honest relays can continue
+  stem propagation beyond one hop, with fallback to ordinary gossip for peers
+  that do not support it.
+- Split origin and relay routing semantics so originators never randomly fluff
+  when a stem successor is available.
+- Make local-origin state persistent until fluff sighting, inclusion, or bounded
+  expiry, and mark all local submission/resubmission paths.
+- Replace single-successor routing with at least two deterministic per-epoch
+  successors and tests for churn resistance.
+- Add tests for multi-hop stem propagation, rebroadcast behavior, non-RPC local
+  paths, peer churn, successor loss, and eclipse/connection-reset pressure.
 
 ## Current Alignment Notes
 
@@ -291,9 +383,10 @@ on a production path with tests or clearly quarantined as non-production tooling
 - Stealth address support is Phase 1.
 - Dandelion++ network-origin privacy is Phase 1 and currently incomplete until
   wired into live propagation.
-- Encrypted mempool work is also Phase 1. It can be staged after Dandelion++ as
-  an engineering sequence, but the target shape must already account for modern
-  threshold-encryption and batched-threshold-encryption research.
+- Encrypted mempool work is also Phase 1. It may be sequenced after Dandelion++
+  inside the same atomic sprint, but it is not a separate phase or a later merge
+  target. The target shape must account for modern threshold-encryption and
+  batched-threshold-encryption research before the sprint is considered complete.
 - Privacy precompiles are Phase 3 roadmap material and must remain gated by the
   Privacy1 fork while this fork uses them as enabling infrastructure.
 - Protocol-native shielded-pool integration overlaps Phase 4, but this fork's

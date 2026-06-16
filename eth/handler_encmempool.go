@@ -29,7 +29,8 @@ import (
 // (eth/protocols/encmempool) into the eth handler. It floods opaque
 // threshold-encrypted envelopes across `enc`-capable peers with content-hash
 // deduplication, so the encrypted mempool is a network-level facility. It never
-// handles plaintext; committee decryption and block inclusion are a later stage.
+// handles plaintext; committee decryption and block inclusion are handled
+// elsewhere in the encrypted-mempool work.
 
 const encPoolMax = 8192
 

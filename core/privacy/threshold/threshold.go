@@ -15,20 +15,19 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 // Package threshold implements the threshold-encryption primitive used by the
-// fork's encrypted-mempool work (Phase 1 of the privacy roadmap). It is the
-// cryptographic foundation for a Shutter-style encrypted mempool: users encrypt a
-// transaction to a committee public key; the transaction propagates and waits
-// encrypted; and only when it is selected for a block does a threshold of
-// committee members release decryption shares that the proposer combines to
-// recover the plaintext. Transactions that are never selected stay encrypted, so
-// their contents remain private — the property batched-threshold-encryption
-// research (USENIX Security 2024/2025) calls privacy for non-included
-// transactions.
+// fork's encrypted mempool. It is the cryptographic foundation for a Shutter-style
+// encrypted mempool: users encrypt a transaction to a committee public key; the
+// transaction propagates and waits encrypted; and only when it is selected for a
+// block does a threshold of committee members release decryption shares that the
+// proposer combines to recover the plaintext. Transactions that are never selected
+// stay encrypted, so their contents remain private — the property
+// batched-threshold-encryption research (USENIX Security 2024/2025) calls privacy
+// for non-included transactions.
 //
-// This is Stage 1 of the encrypted-mempool work: the verifiable threshold
-// cryptosystem only. It is deliberately transport- and consensus-agnostic so it
-// can be tested in isolation. Later stages wire it into a ciphertext transaction
-// type, the mempool/propagation path, and block building/inclusion rules.
+// This file is the verifiable threshold cryptosystem only. It is deliberately
+// transport- and consensus-agnostic so it can be tested in isolation; the
+// committee transport (keyper network) and block-building decryption/inclusion are
+// implemented elsewhere in the encrypted-mempool work.
 //
 // Scheme. A hybrid threshold KEM/DEM over the bn256 pairing curve already used by
 // this fork:

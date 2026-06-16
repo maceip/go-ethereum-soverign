@@ -22,7 +22,7 @@
 // The protocol carries only opaque ciphertext envelopes; it never sees plaintext.
 // Envelopes are flooded with content-hash deduplication so they reach the whole
 // `enc`-capable subgraph. Decryption and block inclusion are handled separately by
-// the committee at inclusion time (Stage 3), not by this propagation layer.
+// the committee at inclusion time, not by this propagation layer.
 package encmempool
 
 import (

@@ -206,92 +206,56 @@ proof does not validate a transaction whose public fields were altered.
 
 ---
 
-## Encrypted mempool (Phase 1) & fair ordering (later)
+## Encrypted mempool (part of the atomic privacy sprint)
 
-**Goal.** Transaction *content* is protected before inclusion, neutralising
-front-running/sandwiching and surveillance of pending transactions. Per `shape.md`
-the encrypted mempool is a **Phase 1** item (threshold-encryption based,
-stage-able after Dandelion++); fair-ordering/PBS hooks are later-phase roadmap
-work. Dandelion++ origin privacy is the other Phase 1 network-privacy item.
+Per `shape.md`, this fork is one atomic sprint with no internal phases. The
+encrypted mempool is in scope for the sprint and is **not yet complete**: until it
+decrypts and includes transactions end to end, the sprint as a whole is incomplete,
+and that is stated plainly rather than dressed up as a shipped milestone.
 
-### Workstreams
+The design is threshold-encryption based with an on-chain-registered keyper
+committee (Shutter model) — not a local-only wallet mode and not commit-reveal.
+A user threshold-encrypts an inner transaction to the committee (eon) key; the
+ciphertext propagates and is buffered; and at block building a threshold of keypers
+release decryption shares so the proposer can decrypt and include it. Transactions
+that are never selected stay encrypted.
 
-1. **Encrypted mempool — Phase 1, threshold-encryption based (Roadmap Ph.1 §2).**
-   Per `shape.md`, this is Phase 1 (stage-able after Dandelion++) and is scoped
-   around threshold encryption — not a local-only wallet mode and not commit-reveal.
-   It is being built in honest, independently-tested stages:
+**Implemented and tested:**
 
-   - **Stage 1 — threshold cryptosystem (DONE).**
-     [`core/privacy/threshold`](core/privacy/threshold) implements a verifiable
-     hybrid threshold KEM/DEM over bn256: trusted-dealer (devnet) `(t,n)` setup,
-     `Encrypt` to a committee key, per-member decryption shares, pairing-based
-     share verification (so decryption-share abuse is detectable — the
-     accountability hook), and Lagrange `Combine`. Tested for correctness,
-     threshold (t-1 cannot decrypt), foreign-share rejection, share verifiability,
-     duplicate-index rejection, and serialization. Trusted-dealer setup is
-     devnet-only and clearly labelled, mirroring the shielded trusted-setup posture;
-     production requires a DKG.
-   - **Stage 2a — encrypted-tx envelope and mempool buffer (DONE).**
-     [`core/privacy/encmempool`](core/privacy/encmempool) provides an `Envelope`
-     wrapping a Stage-1 ciphertext (identified by its content hash) and a bounded,
-     concurrency-safe `Pool` that holds and moves only ciphertext. Tested for
-     dedup/eviction and for the core privacy property: a buffered envelope that is
-     never included exposes only ciphertext, and its plaintext is recoverable only
-     with a threshold of committee decryption shares.
-   - **Stage 2b — network propagation (NEXT).** A dedicated `enc` sub-protocol that
-     gossips encrypted envelopes between capable peers, so the encrypted mempool is
-     network-level rather than a local-only buffer, with multi-node propagation
-     tests.
-   - **Stage 3 — keyper committee, decryption, and inclusion (full keyper model).**
-     Decryption is performed by an on-chain-registered keyper committee (Shutter
-     model), not a fixed devnet committee. Sub-stages:
-     - **Stage 3a — on-chain keyper registry (DONE).**
-       [`core/privacy/keyper`](core/privacy/keyper) is the consensus-readable
-       record of the keyper set, threshold, and committee ("eon") public key,
-       stored in account storage with a Solidity-compatible layout so a registry
-       contract can write it and the client can read it from state. Includes a
-       genesis populator for devnet and tests (round-trip, end-to-end encrypt with
-       the registry-served key, unconfigured/parameter validation). DKG and key
-       release are explicitly **not** in this package.
-     - **Stage 3b — keyper DKG and network.**
-       - *DKG protocol (DONE).* [`core/privacy/keyper/dkg.go`](core/privacy/keyper/dkg.go)
-         implements a Pedersen DKG with Feldman verifiable secret sharing over
-         bn256: each keyper deals a secret polynomial with public commitments,
-         every dealt share is verified (`s*G1 == Σ_k j^k C_k`), and the committee
-         eon key plus per-keyper Shamir shares and verification keys are aggregated.
-         The result is a drop-in trustless replacement for the trusted dealer (no
-         keyper knows the master secret). Tested for a working committee, the
-         threshold bound, Feldman rejection of tampered shares, and aggregation.
-         `RunDKG` drives all parties in-process (tests / single-operator devnet
-         bootstrap); the distributed run uses the same per-party API.
-       - *Keyper network (NEXT, out-of-repo service).* The transport that carries
-         DKG commitments/shares and per-epoch decryption shares between separate
-         keyper processes, watches the chain for the decryption trigger, and posts
-         the eon key to the registry. This is a standalone service built on the
-         tested per-party DKG/threshold APIs; it is not implemented in this repo.
-     - **Stage 3c — decrypt-at-inclusion (consensus-adjacent).** At block building,
-       apply the released epoch key to decrypt scheduled envelopes, recover and
-       execute the inner transactions, with inclusion/ordering rules, fallback when
-       the committee does not release in time, and decryption-share accountability
-       logging. Gated behind the Privacy1 fork.
+- Threshold cryptosystem — [`core/privacy/threshold`](core/privacy/threshold): a
+  verifiable hybrid threshold KEM/DEM over bn256 (`Encrypt` to the committee key,
+  per-member decryption shares, pairing-based share verification for
+  decryption-share accountability, Lagrange `Combine`).
+- Verifiable distributed key generation — [`core/privacy/keyper/dkg.go`](core/privacy/keyper/dkg.go):
+  a Pedersen/Feldman DKG so the committee key is generated with no single party
+  holding the master secret (the trustless replacement for the trusted dealer).
+- Encrypted-tx envelope and buffer — [`core/privacy/encmempool`](core/privacy/encmempool):
+  holds and moves only ciphertext; a never-included envelope exposes only
+  ciphertext, recoverable solely with a committee threshold.
+- Network propagation — [`eth/protocols/encmempool`](eth/protocols/encmempool):
+  the `enc` sub-protocol floods envelopes across capable peers, advertised on the
+  privacy network profile.
+- On-chain keyper registry — [`core/privacy/keyper`](core/privacy/keyper): the
+  consensus-readable committee/threshold/eon-key record, with a Solidity-compatible
+  storage layout and a genesis populator.
 
-   Batched threshold encryption (USENIX Security 2024/2025) and BEAT-MEV are the
-   research directions to track for Stage 3b/3c efficiency; the Stage 1 interfaces
-   do not preclude moving to a batched scheme.
+**Not yet implemented (why the sprint is incomplete):**
 
-2. **Fair ordering & PBS hooks (Roadmap Ph.4 §3).**
-   - Expose an ordering hook in the miner/builder path
-     (`miner/`) so encrypted/committed txs are ordered before decryption.
-   - Optional VDF-based or commit-reveal sortition for proposer-neutral ordering.
+- Keyper-network transport: the standalone service that carries DKG and per-epoch
+  decryption shares between keyper processes, watches the chain trigger, and posts
+  the eon key to the registry. It is built on the tested per-party DKG/threshold
+  APIs but lives outside this repo.
+- Decrypt-at-inclusion in block building: applying released shares to decrypt
+  scheduled envelopes, executing the inner transactions, inclusion/ordering rules,
+  committee-unavailable fallback, and decryption-share accountability logging.
+  This is the consensus-adjacent piece and is gated behind the Privacy1 fork.
 
-### Exit criterion
-On a multi-node devnet, tx contents are unavailable to the proposer until ordering
-is fixed (commit-reveal integration test).
-
-### Key decision
-Encrypted-mempool design: **commit-reveal** (simpler, ships first, weaker
-guarantees) vs **threshold encryption** (stronger, needs validator-key DKG and
-consensus changes). Recommend shipping commit-reveal, then threshold.
+There is no user-facing submit RPC for encrypted transactions yet, so the
+partially-built path does not present a privacy guarantee the client cannot keep.
+Batched threshold encryption (USENIX Security 2024/2025) and BEAT-MEV are the
+research directions to track for efficiency; the current interfaces do not preclude
+moving to a batched scheme. Fair-ordering/PBS hooks are roadmap context (source
+phase 4), not part of this sprint.
 
 ---
 
