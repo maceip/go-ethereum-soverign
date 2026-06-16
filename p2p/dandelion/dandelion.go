@@ -123,6 +123,13 @@ type Config struct {
 	// or black-hole all of a node's stem traffic for the epoch. Values below one
 	// are treated as one.
 	SuccessorCount int
+
+	// StemPeerMinAge is the minimum time a peer must have been connected before it
+	// is eligible to be a stem successor. Newly-connected peers are excluded so an
+	// adversary cannot inject itself into the stem path by repeated reconnection
+	// (eclipse / connection-reset hardening). It is consumed by the integrating
+	// handler when it builds the eligible-peer set, not by the Router core.
+	StemPeerMinAge time.Duration
 }
 
 // DefaultConfig returns the recommended Dandelion++ parameters.
@@ -133,6 +140,7 @@ func DefaultConfig() Config {
 		EmbargoBase:     10 * time.Second,
 		EmbargoJitter:   10 * time.Second,
 		SuccessorCount:  2,
+		StemPeerMinAge:  30 * time.Second,
 	}
 }
 

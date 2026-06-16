@@ -185,34 +185,37 @@ var (
 		Category: flags.DevCategory,
 	}
 
-	// Dandelion++ network-origin privacy flags (Phase 1). Network-level only; no
-	// consensus impact.
-	DandelionEnabledFlag = &cli.BoolFlag{
-		Name:     "dandelion",
-		Usage:    "Enable Dandelion++ network-origin privacy for locally submitted transactions (stem/fluff propagation to obscure the originating node)",
+	// Dandelion++ network-origin privacy (Phase 1) is active by default on the
+	// privacy network profile (any network that activates the Privacy1 fork); it
+	// is not a user opt-in. The flags below are emergency/diagnostic and devnet
+	// tuning controls only — they must never be required to obtain the baseline
+	// origin privacy promised by the roadmap.
+	DandelionDisableFlag = &cli.BoolFlag{
+		Name:     "dandelion.disable",
+		Usage:    "EMERGENCY/DIAGNOSTIC: disable Dandelion++ network-origin privacy even on a privacy network (transactions will reveal their origin node)",
 		Category: flags.NetworkingCategory,
 	}
 	DandelionStemProbabilityFlag = &cli.Float64Flag{
 		Name:     "dandelion.stemprob",
-		Usage:    "Dandelion++ per-hop probability of remaining in the stem (anonymity) phase",
+		Usage:    "Dandelion++ per-hop stem probability (diagnostic/devnet tuning; production uses opinionated defaults)",
 		Value:    dandelion.DefaultConfig().StemProbability,
 		Category: flags.NetworkingCategory,
 	}
 	DandelionEpochDurationFlag = &cli.DurationFlag{
 		Name:     "dandelion.epoch",
-		Usage:    "Dandelion++ duration a stem successor mapping remains fixed before re-randomisation",
+		Usage:    "Dandelion++ stem-successor epoch duration (diagnostic/devnet tuning; production uses opinionated defaults)",
 		Value:    dandelion.DefaultConfig().EpochDuration,
 		Category: flags.NetworkingCategory,
 	}
 	DandelionEmbargoBaseFlag = &cli.DurationFlag{
 		Name:     "dandelion.embargo",
-		Usage:    "Dandelion++ minimum time a stemmed transaction is held before the failsafe diffuses it",
+		Usage:    "Dandelion++ embargo base delay before the failsafe diffuses a stemmed tx (diagnostic/devnet tuning)",
 		Value:    dandelion.DefaultConfig().EmbargoBase,
 		Category: flags.NetworkingCategory,
 	}
 	DandelionEmbargoJitterFlag = &cli.DurationFlag{
 		Name:     "dandelion.embargojitter",
-		Usage:    "Dandelion++ additional random delay added to the embargo timer per transaction",
+		Usage:    "Dandelion++ per-tx random embargo jitter (diagnostic/devnet tuning)",
 		Value:    dandelion.DefaultConfig().EmbargoJitter,
 		Category: flags.NetworkingCategory,
 	}
@@ -1655,9 +1658,11 @@ func setGPO(ctx *cli.Context, cfg *gasprice.Config) {
 }
 
 // setDandelion configures Dandelion++ network-origin privacy from CLI flags.
+// Dandelion++ is active by default on the privacy network profile; these flags
+// only provide an emergency/diagnostic disable and devnet tuning.
 func setDandelion(ctx *cli.Context, cfg *ethconfig.Config) {
-	if ctx.IsSet(DandelionEnabledFlag.Name) {
-		cfg.DandelionEnabled = ctx.Bool(DandelionEnabledFlag.Name)
+	if ctx.IsSet(DandelionDisableFlag.Name) {
+		cfg.DandelionDisabled = ctx.Bool(DandelionDisableFlag.Name)
 	}
 	if ctx.IsSet(DandelionStemProbabilityFlag.Name) {
 		cfg.Dandelion.StemProbability = ctx.Float64(DandelionStemProbabilityFlag.Name)

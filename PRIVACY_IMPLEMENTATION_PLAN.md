@@ -81,19 +81,29 @@ the client as a consensus rule.
    - Extend the `privacy` RPC namespace: `shield`, `unshield`, `transfer`,
      `scanNotes` (using existing stealth scanning), `getMerkleProof`.
 
-6. **Network-origin privacy — Dandelion++ (Roadmap Ph.1 §3). _Wired; multi-hop, corrections applied._**
+6. **Network-origin privacy — Dandelion++ (Roadmap Ph.1 §3). _Wired; multi-hop, default-on, hardened._**
    - The Dandelion++ router ([`p2p/dandelion/dandelion.go`](p2p/dandelion/dandelion.go))
      is wired into the live transaction-propagation path
-     ([`eth/handler_dandelion.go`](eth/handler_dandelion.go)). Locally-originated
-     transactions (tracked from the RPC `SendTx` path) enter the stem phase by
-     default, are relayed to a single epoch-stable successor peer, and fall back
-     to ordinary diffusion when no safe successor exists. Inbound gossip cancels
-     the per-transaction embargo, and an embargo loop diffuses stemmed
-     transactions whose failsafe timer expires.
-   - Feature-gated behind `--dandelion` and tunable (`--dandelion.stemprob`,
-     `--dandelion.epoch`, `--dandelion.embargo`, `--dandelion.embargojitter`)
-     without any consensus change. Covered by router unit tests and multi-node
-     origin-obfuscation / diffusion / embargo-failsafe tests in
+     ([`eth/handler_dandelion.go`](eth/handler_dandelion.go)) as a multi-hop stem
+     over the dedicated `dle` sub-protocol
+     ([`eth/protocols/dandelion`](eth/protocols/dandelion)). The originator never
+     diffuses by chance; local-origin status persists across re-broadcasts and
+     such transactions are withheld from initial mempool sync until they fluff;
+     multiple epoch-stable successors are used; honest relays continue the stem
+     and each arms its own embargo; inbound gossip cancels embargoes; and an
+     embargo loop is the black-hole failsafe.
+   - Stem-successor selection is hardened against eclipse / connection-reset
+     attacks ([`eth/handler_dandelion_eclipse.go`](eth/handler_dandelion_eclipse.go)):
+     stability gating, subnet diversity, outbound preference, and churn monitoring
+     with suspected-eclipse metrics.
+   - Per the Opinionated Privacy Defaults in `shape.md`, it is **active by default
+     on the privacy network profile** (any network that activates the Privacy1
+     fork) and is not a user opt-in. The only disable path is the labelled
+     emergency/diagnostic override `--dandelion.disable`; `--dandelion.stemprob`,
+     `--dandelion.epoch`, `--dandelion.embargo`, and `--dandelion.embargojitter`
+     are diagnostic/devnet tuning only. No consensus rules change. Covered by
+     router unit tests and multi-node origin-obfuscation, multi-hop, relay-embargo,
+     re-broadcast-persistence, diffusion, eclipse-hardening, and churn tests in
      [`eth/handler_dandelion_test.go`](eth/handler_dandelion_test.go).
 
 ### Exit criterion
@@ -152,7 +162,7 @@ devnet verify each other's proofs.
 | EIP-5564 stealth addresses | Real; now hashes the compressed point per EIP-5564 (was x-coordinate only) |
 | Pedersen commitments + `PEDERSEN_COMMIT/ADD`/`PLONK_VERIFY` precompiles | Real, general-purpose; **not** load-bearing for the shielded flow (which uses MiMC + a direct verifier) |
 | Trusted setup | **Deterministic but insecure** (public seed); a real ceremony is the one remaining production blocker |
-| Network-origin privacy (Dandelion++) | **Wired into the live broadcast path as a multi-hop stem.** Persistent local-origin tracking, originator-never-fluffs routing, multi-hop stem relay over the dedicated `dle` sub-protocol with multiple epoch-stable successors, per-node embargo failsafe, and gossip fallback; feature-gated behind `--dandelion`. The five Design Corrections in `shape.md` are implemented and tested (origin obfuscation, multi-hop, relay embargo, re-broadcast persistence). Residual: stem-phase transactions in the originator's mempool can still leak via `eth` mempool syncing to new peers (future work). |
+| Network-origin privacy (Dandelion++) | **Wired into the live broadcast path as a multi-hop stem; active by default on the privacy profile.** Persistent local-origin tracking (withheld from initial mempool sync until fluffed), originator-never-fluffs routing, multi-hop stem relay over the dedicated `dle` sub-protocol with multiple epoch-stable successors, per-node embargo failsafe, gossip fallback, and eclipse/connection-reset hardening (stability gating, subnet diversity, outbound preference, churn monitoring). Not a user opt-in — only an emergency/diagnostic `--dandelion.disable` override. Covered by router and multi-node tests. |
 | Gas costs for shielded ops / precompiles | Real charging, **placeholder values** pending benchmarking |
 
 ### How a shielded transaction is processed (implemented)

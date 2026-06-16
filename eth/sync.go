@@ -28,6 +28,12 @@ func (h *handler) syncTransactions(p *eth.Peer) {
 	pending, _ := h.txpool.Pending(txpool.PendingFilter{BlobTxs: false})
 	for _, batch := range pending {
 		for _, tx := range batch {
+			// Withhold locally-originated transactions still in the Dandelion++ stem
+			// phase: announcing them during initial mempool sync would reveal this
+			// node as their origin. They are announced normally once seen fluffing.
+			if h.withholdFromSync(tx.Hash) {
+				continue
+			}
 			hashes = append(hashes, tx.Hash)
 		}
 	}

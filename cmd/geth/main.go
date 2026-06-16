@@ -75,7 +75,7 @@ var (
 		utils.BlobPoolDataDirFlag,
 		utils.BlobPoolDataCapFlag,
 		utils.BlobPoolPriceBumpFlag,
-		utils.DandelionEnabledFlag,
+		utils.DandelionDisableFlag,
 		utils.DandelionStemProbabilityFlag,
 		utils.DandelionEpochDurationFlag,
 		utils.DandelionEmbargoBaseFlag,

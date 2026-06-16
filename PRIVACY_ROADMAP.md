@@ -26,12 +26,15 @@ infrastructure the later phases compose on top of.
 > over a dedicated [`dle`](eth/protocols/dandelion) sub-protocol that lets honest
 > relays continue the stem, with an embargo failsafe and ordinary gossip as the
 > safety fallback. The originator never diffuses by chance, local-origin status
-> persists across re-broadcasts, multiple epoch-stable successors are used, and
-> every stemming node arms its own embargo (the five Design Corrections in
-> [`shape.md`](shape.md)). It is feature-gated behind `--dandelion` and tunable
-> without any consensus change. One residual remains: a stem-phase transaction in
-> the originator's own mempool can still be revealed via `eth` mempool syncing to
-> new peers, tracked as future work in `shape.md`.
+> persists across re-broadcasts (and such transactions are withheld from initial
+> mempool sync until they fluff), multiple epoch-stable successors are used, and
+> every stemming node arms its own embargo. Stem-successor selection is hardened
+> against eclipse / connection-reset attacks (stability gating, subnet diversity,
+> outbound preference, churn monitoring). Per the **Opinionated Privacy Defaults**
+> in [`shape.md`](shape.md), it is **active by default on the privacy network
+> profile** (any network that activates the Privacy1 fork) — not a user opt-in;
+> the only disable path is a labelled emergency/diagnostic override
+> (`--dandelion.disable`). It changes no consensus rules.
 
 ## Design notes
 

@@ -18,6 +18,7 @@ package eth
 
 import (
 	"math/big"
+	"net"
 	"testing"
 	"time"
 
@@ -46,6 +47,10 @@ func buildDandelionHandler(t *testing.T, cfg dandelion.Config) *testHandler {
 	}
 	chain, _ := core.NewBlockChain(db, gspec, ethash.NewFaker(), nil)
 	pool := newTestTxPool()
+
+	// In tests, peers are eligible as stem successors immediately (the production
+	// stability gating is exercised directly in TestEligibleStemPeers).
+	cfg.StemPeerMinAge = 0
 
 	handler, err := newHandler(&handlerConfig{
 		Database:         db,
@@ -458,6 +463,115 @@ func TestOriginTracker(t *testing.T) {
 	}
 	if live == 0 {
 		t.Fatal("origin tracker evicted everything; most recent marks should survive")
+	}
+}
+
+// TestDandelionWithholdFromSync checks that locally-originated transactions still
+// in the stem phase are withheld from initial mempool syncing (so a freshly
+// connected peer is not told this node holds them), and are released once fluffed.
+func TestDandelionWithholdFromSync(t *testing.T) {
+	cfg := dandelion.DefaultConfig()
+	source := buildDandelionHandler(t, cfg)
+	defer source.close()
+
+	local := makeLocalTestTx(0)
+	remote := makeLocalTestTx(1)
+
+	source.handler.markLocalTx(local.Hash())
+	if !source.handler.withholdFromSync(local.Hash()) {
+		t.Fatal("local stem-phase transaction must be withheld from initial sync")
+	}
+	if source.handler.withholdFromSync(remote.Hash()) {
+		t.Fatal("non-local transaction must not be withheld from sync")
+	}
+
+	// A fluff sighting makes it public; it should then be syncable normally.
+	source.handler.markFluffed(local.Hash())
+	if source.handler.withholdFromSync(local.Hash()) {
+		t.Fatal("fluffed transaction must no longer be withheld from sync")
+	}
+}
+
+// TestEligibleStemPeers exercises the eclipse/connection-reset hardening of
+// stem-successor selection: stability gating, subnet diversity, and outbound
+// preference.
+func TestEligibleStemPeers(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id byte, ip string, ageSec int, inbound bool) *dlePeerInfo {
+		var nip net.IP
+		if ip != "" {
+			nip = net.ParseIP(ip)
+		}
+		p := dleproto.NewPeer(dleproto.DLE1, p2p.NewPeer(enode.ID{id}, "", nil), nil)
+		t.Cleanup(p.Close)
+		return &dlePeerInfo{
+			peer:        p,
+			connectedAt: now.Add(-time.Duration(ageSec) * time.Second),
+			ip:          nip,
+			inbound:     inbound,
+		}
+	}
+	has := func(ids []enode.ID, id byte) bool {
+		for _, x := range ids {
+			if x == (enode.ID{id}) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Stability gating: a peer younger than minAge is excluded.
+	fresh := mk(1, "1.1.1.1", 5, false)
+	stable := mk(2, "2.2.2.2", 120, false)
+	got := eligibleStemPeers([]*dlePeerInfo{fresh, stable}, now, 30*time.Second)
+	if has(got, 1) {
+		t.Fatal("freshly-connected peer must not be stem-eligible under stability gating")
+	}
+	if !has(got, 2) {
+		t.Fatal("stable peer should be stem-eligible")
+	}
+
+	// Subnet diversity: two peers in the same /24 collapse to one.
+	a := mk(3, "10.0.0.1", 100, false)
+	b := mk(4, "10.0.0.2", 50, false) // same /24, younger
+	got = eligibleStemPeers([]*dlePeerInfo{a, b}, now, 0)
+	if has(got, 3) == has(got, 4) {
+		t.Fatalf("expected exactly one peer from a shared /24, got %v", got)
+	}
+	if !has(got, 3) {
+		t.Fatal("subnet diversity should keep the longer-connected peer")
+	}
+
+	// Outbound preference within a subnet: outbound beats a longer-lived inbound.
+	inOld := mk(5, "172.16.0.1", 200, true)
+	outNew := mk(6, "172.16.0.2", 20, false) // same /24, outbound
+	got = eligibleStemPeers([]*dlePeerInfo{inOld, outNew}, now, 0)
+	if !has(got, 6) || has(got, 5) {
+		t.Fatalf("outbound peer should be preferred within a subnet, got %v", got)
+	}
+
+	// Peers with no IP (in-process/test peers) are never collapsed together.
+	n1, n2 := mk(7, "", 100, false), mk(8, "", 100, false)
+	got = eligibleStemPeers([]*dlePeerInfo{n1, n2}, now, 0)
+	if !has(got, 7) || !has(got, 8) {
+		t.Fatalf("peers without IPs must not be collapsed, got %v", got)
+	}
+}
+
+// TestChurnTracker exercises the connection-reset / eclipse pressure detector.
+func TestChurnTracker(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c := newChurnTracker(time.Minute)
+
+	for i := 0; i < 5; i++ {
+		c.record(now.Add(time.Duration(i) * time.Second))
+	}
+	if got := c.rate(now.Add(5 * time.Second)); got != 5 {
+		t.Fatalf("churn rate = %d, want 5", got)
+	}
+	// Records outside the window are pruned.
+	if got := c.rate(now.Add(2 * time.Minute)); got != 0 {
+		t.Fatalf("churn rate after window = %d, want 0", got)
 	}
 }
 

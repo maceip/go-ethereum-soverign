@@ -344,6 +344,17 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		stack.RegisterLifecycle(eth.localTxTracker)
 	}
 
+	// Dandelion++ network-origin privacy is part of the opinionated privacy
+	// profile: it is active by default on any network that activates the Privacy1
+	// fork, and is not a user opt-in. The only way to turn it off is the labelled
+	// emergency/diagnostic override, which makes the resulting privacy gap loud.
+	dandelionActive := chainConfig.Privacy1Time != nil
+	if dandelionActive && config.DandelionDisabled {
+		dandelionActive = false
+		log.Warn("Dandelion++ network-origin privacy DISABLED by emergency override; locally-submitted transactions will reveal their origin node to the network",
+			"override", "--dandelion.disable")
+	}
+
 	// Permit the downloader to use the trie cache allowance during fast sync
 	cacheLimit := options.TrieCleanLimit + options.TrieDirtyLimit + options.SnapshotLimit
 	if eth.handler, err = newHandler(&handlerConfig{
@@ -357,7 +368,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		RequiredBlocks: config.RequiredBlocks,
 		SnapV2:         config.SnapV2,
 
-		DandelionEnabled: config.DandelionEnabled,
+		DandelionEnabled: dandelionActive,
 		Dandelion:        config.Dandelion,
 	}); err != nil {
 		return nil, err
@@ -464,8 +475,9 @@ func (s *Ethereum) Protocols() []p2p.Protocol {
 		protos = append(protos, snap.MakeProtocols((*snapHandler)(s.handler), s.config.SnapV2)...)
 	}
 	// Advertise the Dandelion++ stem sub-protocol when network-origin privacy is
-	// enabled, so stem-phase transactions can be relayed to capable peers.
-	if s.config.DandelionEnabled {
+	// active (default on the privacy network profile), so stem-phase transactions
+	// can be relayed to capable peers.
+	if s.handler.dandelion != nil {
 		protos = append(protos, dleproto.MakeProtocols((*dandelionHandler)(s.handler))...)
 	}
 	return protos

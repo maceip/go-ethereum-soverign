@@ -234,6 +234,14 @@ func (h *handler) isLocalTx(hash common.Hash) bool {
 	return h.localOrigins.isLocal(hash)
 }
 
+// withholdFromSync reports whether a transaction must be withheld from initial
+// mempool syncing to a freshly-connected peer because it is a locally-originated
+// transaction still in the Dandelion++ stem phase. Announcing it would reveal this
+// node as its origin; once it is seen fluffing it is announced normally.
+func (h *handler) withholdFromSync(hash common.Hash) bool {
+	return h.dandelion != nil && h.isLocalTx(hash)
+}
+
 // markFluffed records that the given transactions have been seen propagating via
 // normal diffusion: it cancels any local embargo failsafe, releases any held copy,
 // and stops the origin from re-stemming them. No-op when Dandelion++ is disabled.
@@ -252,39 +260,60 @@ func (h *handler) markFluffed(hashes ...common.Hash) {
 func (h *handler) dandelionPeer(id enode.ID) *dleproto.Peer {
 	h.dandelionPeerLock.RLock()
 	defer h.dandelionPeerLock.RUnlock()
-	return h.dandelionPeers[id]
+	if info := h.dandelionPeers[id]; info != nil {
+		return info.peer
+	}
+	return nil
 }
 
-// registerDandelionPeer adds a `dle` peer to the eligible-successor set.
+// registerDandelionPeer records a `dle` peer together with the connection metadata
+// used to harden stem-successor selection against eclipse / connection-reset
+// attacks, then refreshes the eligible-successor set.
 func (h *handler) registerDandelionPeer(peer *dleproto.Peer) {
+	info := &dlePeerInfo{
+		peer:        peer,
+		connectedAt: time.Now(),
+		inbound:     peer.Inbound(),
+	}
+	if node := peer.Node(); node != nil {
+		info.ip = node.IP()
+	}
 	h.dandelionPeerLock.Lock()
-	h.dandelionPeers[peer.ID()] = peer
+	h.dandelionPeers[peer.ID()] = info
 	h.dandelionPeerLock.Unlock()
 	h.updateDandelionPeers()
 }
 
-// unregisterDandelionPeer removes a `dle` peer from the eligible-successor set.
+// unregisterDandelionPeer removes a `dle` peer, records the disconnection for
+// connection-reset / eclipse detection, and refreshes the eligible-successor set.
 func (h *handler) unregisterDandelionPeer(id enode.ID) {
 	h.dandelionPeerLock.Lock()
+	_, existed := h.dandelionPeers[id]
 	delete(h.dandelionPeers, id)
 	h.dandelionPeerLock.Unlock()
+	if existed {
+		h.recordDandelionChurn()
+	}
 	h.updateDandelionPeers()
 }
 
 // updateDandelionPeers refreshes the router's set of eligible stem successors from
-// the live `dle` peers (only peers that speak the stem sub-protocol can continue a
-// stem). It is invoked on `dle` peer connect/disconnect and from the embargo loop.
+// the live `dle` peers, applying eclipse/connection-reset hardening (stability
+// gating, subnet diversity, outbound preference). Only peers that speak the stem
+// sub-protocol can continue a stem. Invoked on `dle` peer connect/disconnect and
+// from the embargo loop.
 func (h *handler) updateDandelionPeers() {
 	if h.dandelion == nil {
 		return
 	}
 	h.dandelionPeerLock.RLock()
-	ids := make([]enode.ID, 0, len(h.dandelionPeers))
-	for id := range h.dandelionPeers {
-		ids = append(ids, id)
+	infos := make([]*dlePeerInfo, 0, len(h.dandelionPeers))
+	for _, info := range h.dandelionPeers {
+		infos = append(infos, info)
 	}
 	h.dandelionPeerLock.RUnlock()
-	h.dandelion.SetPeers(ids)
+
+	h.dandelion.SetPeers(eligibleStemPeers(infos, time.Now(), h.dandelionCfg.StemPeerMinAge))
 }
 
 // stemTransactions applies Dandelion++ origin routing to a batch of transactions

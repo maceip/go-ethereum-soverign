@@ -36,7 +36,6 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/eth/fetcher"
-	dleproto "github.com/ethereum/go-ethereum/eth/protocols/dandelion"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -140,10 +139,12 @@ type handler struct {
 	// upstream go-ethereum.
 	dandelion         *dandelion.Router
 	dandelionCfg      dandelion.Config
-	localOrigins      *originTracker              // hashes of locally-originated transactions
-	stemHold          *stemHoldSet                // relay-held stem transactions awaiting fluff/embargo
-	dandelionPeers    map[enode.ID]*dleproto.Peer // peers speaking the `dle` stem sub-protocol
+	localOrigins      *originTracker            // hashes of locally-originated transactions
+	stemHold          *stemHoldSet              // relay-held stem transactions awaiting fluff/embargo
+	dandelionPeers    map[enode.ID]*dlePeerInfo // peers speaking the `dle` stem sub-protocol
 	dandelionPeerLock sync.RWMutex
+	churn             *churnTracker // stem-peer disconnection tracker (eclipse detection)
+	lastEclipseLog    atomic.Int64  // unix-nanos of last eclipse warning (rate limit)
 
 	requiredBlocks map[uint64]common.Hash
 
@@ -207,7 +208,8 @@ func newHandler(config *handlerConfig) (*handler, error) {
 		h.dandelion = dandelion.New(config.Dandelion, config.NodeID)
 		h.localOrigins = newOriginTracker()
 		h.stemHold = newStemHoldSet()
-		h.dandelionPeers = make(map[enode.ID]*dleproto.Peer)
+		h.dandelionPeers = make(map[enode.ID]*dlePeerInfo)
+		h.churn = newChurnTracker(dandelionChurnWindow)
 		log.Info("Dandelion++ transaction-origin privacy enabled",
 			"stemprob", config.Dandelion.StemProbability,
 			"epoch", config.Dandelion.EpochDuration,

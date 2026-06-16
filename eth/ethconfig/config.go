@@ -171,11 +171,15 @@ type Config struct {
 	TxPool   legacypool.Config
 	BlobPool blobpool.Config
 
-	// DandelionEnabled turns on Dandelion++ network-origin privacy for locally
-	// submitted transactions (Phase 1 of the privacy roadmap). It is a
-	// network-level, non-consensus feature.
-	DandelionEnabled bool
-	// Dandelion holds the Dandelion++ tuning parameters used when enabled.
+	// Dandelion++ network-origin privacy (Phase 1) is part of the opinionated
+	// privacy profile: it is active by default on any network that activates the
+	// Privacy1 fork and is not a user opt-in. DandelionDisabled is a labelled
+	// emergency/diagnostic override that turns it off even on a privacy network;
+	// using it leaves a loud warning in the logs because it removes origin privacy.
+	DandelionDisabled bool
+	// Dandelion holds the Dandelion++ tuning parameters. Production defaults come
+	// from dandelion.DefaultConfig(); overrides are for devnets, simulations, and
+	// diagnostics only.
 	Dandelion dandelion.Config
 
 	// Gas Price Oracle options
