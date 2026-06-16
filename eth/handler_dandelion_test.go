@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
+	dleproto "github.com/ethereum/go-ethereum/eth/protocols/dandelion"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/dandelion"
@@ -36,7 +37,8 @@ import (
 
 // buildDandelionHandler builds a test handler with Dandelion++ network-origin
 // privacy enabled and the given tuning parameters, over a mock transaction pool.
-func buildDandelionHandler(cfg dandelion.Config) *testHandler {
+func buildDandelionHandler(t *testing.T, cfg dandelion.Config) *testHandler {
+	t.Helper()
 	db := rawdb.NewMemoryDatabase()
 	gspec := &core.Genesis{
 		Config: params.TestChainConfig,
@@ -56,83 +58,135 @@ func buildDandelionHandler(cfg dandelion.Config) *testHandler {
 		Dandelion:        cfg,
 	})
 	if err != nil {
-		panic(err)
+		t.Fatalf("failed to create dandelion handler: %v", err)
 	}
 	handler.Start(1000)
-
+	handler.synced.Store(true)
 	return &testHandler{db: db, chain: chain, txpool: pool, handler: handler}
 }
 
-// makeLocalTestTx returns a signed legacy transaction for the test account.
 func makeLocalTestTx(nonce uint64) *types.Transaction {
 	tx := types.NewTransaction(nonce, common.Address{}, big.NewInt(0), 100000, big.NewInt(0), nil)
 	tx, _ = types.SignTx(tx, types.HomesteadSigner{}, testKey)
 	return tx
 }
 
-// connectSink wires a fresh sink handler to the source handler over a MsgPipe and
-// returns the sink together with a channel that receives its pool events. The
-// caller is responsible for keeping the returned cleanup until the test ends.
-func connectSink(t *testing.T, source *testHandler, id byte, active bool) (*testHandler, chan core.NewTxsEvent, func()) {
-	t.Helper()
+// connectEth wires an `eth` connection between a and b over a MsgPipe. a sees b as
+// node id nodeB and b sees a as node id nodeA.
+func connectEth(a, b *testHandler, nodeA, nodeB byte) func() {
+	ap, bp := p2p.MsgPipe()
+	aPeer := eth.NewPeer(eth.ETH69, p2p.NewPeerPipe(enode.ID{nodeB}, "", nil, ap), ap, a.txpool, nil)
+	bPeer := eth.NewPeer(eth.ETH69, p2p.NewPeerPipe(enode.ID{nodeA}, "", nil, bp), bp, b.txpool, nil)
 
-	sink := newTestHandler(ethconfig.FullSync)
-	sink.handler.synced.Store(true)
-
-	sourcePipe, sinkPipe := p2p.MsgPipe()
-	sourcePeer := eth.NewPeer(eth.ETH69, p2p.NewPeerPipe(enode.ID{id}, "", nil, sourcePipe), sourcePipe, source.txpool, nil)
-	sinkPeer := eth.NewPeer(eth.ETH69, p2p.NewPeerPipe(enode.ID{0}, "", nil, sinkPipe), sinkPipe, sink.txpool, nil)
-
-	go source.handler.runEthPeer(sourcePeer, func(peer *eth.Peer) error {
-		return eth.Handle((*ethHandler)(source.handler), peer)
+	go a.handler.runEthPeer(aPeer, func(peer *eth.Peer) error {
+		return eth.Handle((*ethHandler)(a.handler), peer)
 	})
-	go sink.handler.runEthPeer(sinkPeer, func(peer *eth.Peer) error {
-		if !active {
-			// Passive observer (black-hole peer): drain and discard messages so the
-			// transport never blocks, but never process or re-diffuse them, so it
-			// produces no fluff sighting back to the source. Exits when the pipe is
-			// closed so the handler can shut down cleanly.
-			for {
-				msg, err := sinkPipe.ReadMsg()
-				if err != nil {
-					return err
-				}
-				msg.Discard()
-			}
-		}
-		return eth.Handle((*ethHandler)(sink.handler), peer)
+	go b.handler.runEthPeer(bPeer, func(peer *eth.Peer) error {
+		return eth.Handle((*ethHandler)(b.handler), peer)
 	})
-
-	ch := make(chan core.NewTxsEvent, 1024)
-	sub := sink.txpool.SubscribeTransactions(ch, false)
-
-	cleanup := func() {
-		sub.Unsubscribe()
-		sourcePeer.Close()
-		sinkPeer.Close()
-		sourcePipe.Close()
-		sinkPipe.Close()
-		sink.close()
+	return func() {
+		ap.Close()
+		bp.Close()
+		aPeer.Close()
+		bPeer.Close()
 	}
-	return sink, ch, cleanup
 }
 
-// waitForPeers blocks until the handler has at least n connected peers.
-func waitForPeers(t *testing.T, h *handler, n int) {
+// connectDle wires a `dle` (Dandelion++ stem) connection between a and b over a
+// MsgPipe, registering each as the other's stem peer.
+func connectDle(a, b *testHandler, nodeA, nodeB byte) func() {
+	ap, bp := p2p.MsgPipe()
+	aPeer := dleproto.NewPeer(dleproto.DLE1, p2p.NewPeerPipe(enode.ID{nodeB}, "", nil, ap), ap)
+	bPeer := dleproto.NewPeer(dleproto.DLE1, p2p.NewPeerPipe(enode.ID{nodeA}, "", nil, bp), bp)
+
+	go (*dandelionHandler)(a.handler).RunPeer(aPeer, func(peer *dleproto.Peer) error {
+		defer peer.Close()
+		return dleproto.Handle((*dandelionHandler)(a.handler), peer)
+	})
+	go (*dandelionHandler)(b.handler).RunPeer(bPeer, func(peer *dleproto.Peer) error {
+		defer peer.Close()
+		return dleproto.Handle((*dandelionHandler)(b.handler), peer)
+	})
+	return func() {
+		ap.Close()
+		bp.Close()
+	}
+}
+
+// connectDleBlackHole connects a black-hole `dle` peer (node id holeNode) to relay:
+// relay registers it as a stem successor, but the peer silently drains every stem
+// message without ever fluffing or continuing the stem.
+func connectDleBlackHole(relay *testHandler, holeNode byte) func() {
+	rp, hp := p2p.MsgPipe()
+	relayPeer := dleproto.NewPeer(dleproto.DLE1, p2p.NewPeerPipe(enode.ID{holeNode}, "", nil, rp), rp)
+
+	go (*dandelionHandler)(relay.handler).RunPeer(relayPeer, func(peer *dleproto.Peer) error {
+		defer peer.Close()
+		return dleproto.Handle((*dandelionHandler)(relay.handler), peer)
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			msg, err := hp.ReadMsg()
+			if err != nil {
+				return
+			}
+			msg.Discard()
+		}
+	}()
+	return func() {
+		rp.Close()
+		hp.Close()
+		<-done
+	}
+}
+
+func dlePeerCount(h *handler) int {
+	h.dandelionPeerLock.RLock()
+	defer h.dandelionPeerLock.RUnlock()
+	return len(h.dandelionPeers)
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if h.peers.len() >= n {
+		if cond() {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %d peers (have %d)", n, h.peers.len())
+	t.Fatalf("timed out waiting for %s", what)
 }
 
-// countSinksReceiving reports how many of the given pool-event channels deliver
-// the target transaction hash within the timeout.
-func countSinksReceiving(chs []chan core.NewTxsEvent, hash common.Hash, timeout time.Duration) int {
+func subscribePool(h *testHandler) (chan core.NewTxsEvent, func()) {
+	ch := make(chan core.NewTxsEvent, 1024)
+	sub := h.txpool.SubscribeTransactions(ch, false)
+	return ch, sub.Unsubscribe
+}
+
+// poolReceived reports whether the target hash arrives on the pool-event channel
+// within the timeout.
+func poolReceived(ch chan core.NewTxsEvent, hash common.Hash, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev := <-ch:
+			for _, tx := range ev.Txs {
+				if tx.Hash() == hash {
+					return true
+				}
+			}
+		case <-deadline:
+			return false
+		}
+	}
+}
+
+// countReceiving reports how many of the channels deliver the target hash within
+// the timeout.
+func countReceiving(chs []chan core.NewTxsEvent, hash common.Hash, timeout time.Duration) int {
 	seen := make([]bool, len(chs))
 	count := 0
 	deadline := time.After(timeout)
@@ -158,117 +212,205 @@ func countSinksReceiving(chs []chan core.NewTxsEvent, hash common.Hash, timeout 
 			}
 		}
 		time.Sleep(5 * time.Millisecond)
-		select {
-		case <-deadline:
-			return count
-		default:
-		}
 	}
 	return count
 }
 
-// TestDandelionStemReachesSinglePeer is the core origin-obfuscation test: a
-// locally-originated transaction submitted with Dandelion++ enabled must be
-// relayed to exactly one stem successor, not diffused to a square root of peers.
-// The set of sinks acts as an adversarial observer attempting to localise the
-// origin from who receives the transaction first.
+// TestDandelionStemReachesSinglePeer is the core origin-obfuscation test: a local
+// transaction submitted with Dandelion++ enabled is relayed to exactly one stem
+// successor over `dle`, not diffused to a square root of peers. The sinks act as an
+// adversarial observer trying to localise the origin from who receives it.
 func TestDandelionStemReachesSinglePeer(t *testing.T) {
-	cfg := dandelion.Config{
-		StemProbability: 1.0,              // always remain in the stem phase
-		EpochDuration:   time.Minute,      // stable successor for the whole test
-		EmbargoBase:     10 * time.Second, // long enough that the failsafe never fires here
-		EmbargoJitter:   0,
-	}
-	source := buildDandelionHandler(cfg)
+	cfg := dandelion.DefaultConfig()
+	cfg.EmbargoBase = 10 * time.Second // long: the failsafe must not fire during the test
+	cfg.EmbargoJitter = 0
+
+	source := buildDandelionHandler(t, cfg)
 	defer source.close()
-	source.handler.synced.Store(true)
 
 	const numSinks = 8
 	txChs := make([]chan core.NewTxsEvent, numSinks)
 	for i := 0; i < numSinks; i++ {
-		_, ch, cleanup := connectSink(t, source, byte(i+1), true)
-		defer cleanup()
+		sink := buildDandelionHandler(t, cfg)
+		defer sink.close()
+
+		nodeSource, nodeSink := byte(100), byte(i+1)
+		defer connectEth(source, sink, nodeSource, nodeSink)()
+		defer connectDle(source, sink, nodeSource, nodeSink)()
+
+		ch, unsub := subscribePool(sink)
+		defer unsub()
 		txChs[i] = ch
 	}
-	waitForPeers(t, source.handler, numSinks)
+	waitFor(t, "dle peers", func() bool { return dlePeerCount(source.handler) == numSinks })
 
 	tx := makeLocalTestTx(0)
 	source.handler.markLocalTx(tx.Hash())
 	source.txpool.Add([]*types.Transaction{tx}, false)
 
-	if got := countSinksReceiving(txChs, tx.Hash(), 2*time.Second); got != 1 {
+	if got := countReceiving(txChs, tx.Hash(), 2*time.Second); got != 1 {
 		t.Fatalf("stemmed transaction reached %d peers, want exactly 1 (origin obfuscation failed)", got)
 	}
 }
 
-// TestDandelionRemoteTxDiffuses verifies that transactions which did not originate
-// locally are unaffected by Dandelion++: they diffuse normally to all peers. This
-// guards against the privacy path accidentally throttling ordinary gossip.
-func TestDandelionRemoteTxDiffuses(t *testing.T) {
-	cfg := dandelion.Config{
-		StemProbability: 1.0,
-		EpochDuration:   time.Minute,
-		EmbargoBase:     10 * time.Second,
-		EmbargoJitter:   0,
+// TestDandelionMultiHopStem is Correction 2: the stem continues across an honest
+// relay via the explicit `dle` signal, so the fluff begins at least two hops from
+// the origin. A -> B -> C: B relays onward (it must not appear in its own pool),
+// and C is where the transaction fluffs into the mempool.
+func TestDandelionMultiHopStem(t *testing.T) {
+	cfg := dandelion.DefaultConfig()
+	cfg.StemProbability = 1.0 // relays always continue the stem
+	cfg.EmbargoBase = 10 * time.Second
+	cfg.EmbargoJitter = 0
+
+	a := buildDandelionHandler(t, cfg) // origin (node 1)
+	defer a.close()
+	b := buildDandelionHandler(t, cfg) // relay (node 2)
+	defer b.close()
+	c := buildDandelionHandler(t, cfg) // relay/fluff point (node 3)
+	defer c.close()
+
+	defer connectDle(a, b, 1, 2)()
+	defer connectDle(b, c, 2, 3)()
+
+	waitFor(t, "A stem peer", func() bool { return dlePeerCount(a.handler) == 1 })
+	waitFor(t, "B stem peers", func() bool { return dlePeerCount(b.handler) == 2 })
+	waitFor(t, "C stem peer", func() bool { return dlePeerCount(c.handler) == 1 })
+
+	bCh, unsubB := subscribePool(b)
+	defer unsubB()
+	cCh, unsubC := subscribePool(c)
+	defer unsubC()
+
+	tx := makeLocalTestTx(0)
+	a.handler.markLocalTx(tx.Hash())
+	a.txpool.Add([]*types.Transaction{tx}, false)
+
+	// The transaction must fluff into C's pool (two hops from A).
+	if !poolReceived(cCh, tx.Hash(), 3*time.Second) {
+		t.Fatal("transaction never reached the second-hop relay C: stem did not continue")
 	}
-	source := buildDandelionHandler(cfg)
+	// B only relays; it must not admit the transaction to its own pool while
+	// stemming.
+	if b.txpool.Has(tx.Hash()) {
+		t.Fatal("relay B admitted the stem transaction to its pool instead of relaying it onward")
+	}
+	// Drain any late B event defensively (should not arrive).
+	if poolReceived(bCh, tx.Hash(), 200*time.Millisecond) {
+		t.Fatal("relay B fluffed the transaction itself instead of continuing the stem")
+	}
+}
+
+// TestDandelionRelayEmbargo is Correction 5: a relay arms its own embargo, so when
+// the node it stems to is a black hole, the relay itself recovers the transaction
+// by diffusing it. A -> B -> C(black hole); B's own failsafe must surface the tx.
+func TestDandelionRelayEmbargo(t *testing.T) {
+	cfg := dandelion.DefaultConfig()
+	cfg.StemProbability = 1.0
+	cfg.EmbargoBase = 150 * time.Millisecond
+	cfg.EmbargoJitter = 0
+
+	a := buildDandelionHandler(t, cfg) // origin (node 1)
+	defer a.close()
+	b := buildDandelionHandler(t, cfg) // relay (node 2)
+	defer b.close()
+
+	defer connectDle(a, b, 1, 2)()
+	defer connectDleBlackHole(b, 3)() // B stems to node 3, which silently drops everything
+
+	waitFor(t, "A stem peer", func() bool { return dlePeerCount(a.handler) == 1 })
+	waitFor(t, "B stem peers", func() bool { return dlePeerCount(b.handler) == 2 })
+
+	bCh, unsubB := subscribePool(b)
+	defer unsubB()
+
+	tx := makeLocalTestTx(0)
+	a.handler.markLocalTx(tx.Hash())
+	a.txpool.Add([]*types.Transaction{tx}, false)
+
+	// B stemmed the transaction to the black hole and armed its own embargo. Since
+	// the black hole never fluffs, B's failsafe must admit the transaction to B's
+	// pool. A and B share only a `dle` link, so this can only come from B's own
+	// embargo, not from A.
+	if !poolReceived(bCh, tx.Hash(), 3*time.Second) {
+		t.Fatal("relay B did not recover the black-holed transaction via its own embargo")
+	}
+}
+
+// TestDandelionRemoteTxDiffuses verifies that transactions which did not originate
+// locally are unaffected by Dandelion++: they diffuse normally to all peers.
+func TestDandelionRemoteTxDiffuses(t *testing.T) {
+	cfg := dandelion.DefaultConfig()
+	cfg.EmbargoBase = 10 * time.Second
+	cfg.EmbargoJitter = 0
+
+	source := buildDandelionHandler(t, cfg)
 	defer source.close()
-	source.handler.synced.Store(true)
 
 	const numSinks = 6
 	txChs := make([]chan core.NewTxsEvent, numSinks)
 	for i := 0; i < numSinks; i++ {
-		_, ch, cleanup := connectSink(t, source, byte(i+1), true)
-		defer cleanup()
+		sink := buildDandelionHandler(t, cfg)
+		defer sink.close()
+
+		defer connectEth(source, sink, 100, byte(i+1))()
+		defer connectDle(source, sink, 100, byte(i+1))()
+
+		ch, unsub := subscribePool(sink)
+		defer unsub()
 		txChs[i] = ch
 	}
-	waitForPeers(t, source.handler, numSinks)
+	waitFor(t, "eth peers", func() bool { return source.handler.peers.len() == numSinks })
 
-	// Do NOT mark the transaction as local: it must diffuse like a relayed tx.
+	// Not marked local: must diffuse like a relayed transaction.
 	tx := makeLocalTestTx(0)
 	source.txpool.Add([]*types.Transaction{tx}, false)
 
-	if got := countSinksReceiving(txChs, tx.Hash(), 3*time.Second); got != numSinks {
+	if got := countReceiving(txChs, tx.Hash(), 3*time.Second); got != numSinks {
 		t.Fatalf("non-local transaction reached %d/%d peers, want full diffusion", got, numSinks)
 	}
 }
 
-// TestDandelionEmbargoFailsafe verifies the black-hole failsafe: when a stemmed
-// transaction is never observed returning via diffusion, the embargo timer expires
-// and the node diffuses it itself so it is never lost.
-func TestDandelionEmbargoFailsafe(t *testing.T) {
-	cfg := dandelion.Config{
-		StemProbability: 1.0,
-		EpochDuration:   time.Minute,
-		EmbargoBase:     150 * time.Millisecond, // short embargo so the test is quick
-		EmbargoJitter:   0,
-	}
-	source := buildDandelionHandler(cfg)
-	defer source.close()
-	source.handler.synced.Store(true)
+// TestDandelionRebroadcastPersists is Correction 3: local-origin status persists,
+// so repeated broadcasts of the same local transaction keep stemming instead of
+// diffusing the origin after the first send.
+func TestDandelionRebroadcastPersists(t *testing.T) {
+	cfg := dandelion.DefaultConfig()
+	cfg.EmbargoBase = 10 * time.Second
+	cfg.EmbargoJitter = 0
 
-	// First peer is a passive observer: it receives the stem relay but never
-	// re-diffuses, so the source never gets a fluff sighting and the embargo fires.
-	_, _, cleanupPassive := connectSink(t, source, 1, false)
-	defer cleanupPassive()
-	waitForPeers(t, source.handler, 1)
+	source := buildDandelionHandler(t, cfg)
+	defer source.close()
+	sink := buildDandelionHandler(t, cfg)
+	defer sink.close()
+
+	defer connectDle(source, sink, 100, 1)()
+	waitFor(t, "dle peer", func() bool { return dlePeerCount(source.handler) == 1 })
 
 	tx := makeLocalTestTx(0)
 	source.handler.markLocalTx(tx.Hash())
-	source.txpool.Add([]*types.Transaction{tx}, false)
 
-	// Now connect an active observer. When the embargo expires, the failsafe loop
-	// must diffuse the transaction, and this peer must receive it.
-	_, ch, cleanupActive := connectSink(t, source, 2, true)
-	defer cleanupActive()
-	waitForPeers(t, source.handler, 2)
+	// Each broadcast must stem (return nothing to diffuse) and leave the origin
+	// status intact for the next round. A consume-once tracker would diffuse from
+	// the second call onward.
+	for i := 0; i < 4; i++ {
+		diffuse := source.handler.stemTransactions(types.Transactions{tx})
+		if len(diffuse) != 0 {
+			t.Fatalf("re-broadcast %d diffused the local transaction instead of stemming it", i+1)
+		}
+		if !source.handler.isLocalTx(tx.Hash()) {
+			t.Fatalf("local-origin status lost after broadcast %d", i+1)
+		}
+	}
 
-	if got := countSinksReceiving([]chan core.NewTxsEvent{ch}, tx.Hash(), 3*time.Second); got != 1 {
-		t.Fatalf("embargoed transaction was not diffused by the failsafe (received by %d/1 observers)", got)
+	// A fluff sighting clears the origin status (it is now public).
+	source.handler.markFluffed(tx.Hash())
+	if source.handler.isLocalTx(tx.Hash()) {
+		t.Fatal("fluff sighting did not clear local-origin status")
 	}
 }
 
-// TestOriginTracker exercises the local-origin tracker's consume-once semantics,
+// TestOriginTracker exercises the local-origin tracker's persistence, clearing,
 // TTL expiry, and size cap.
 func TestOriginTracker(t *testing.T) {
 	now := time.Unix(0, 0)
@@ -281,21 +423,25 @@ func TestOriginTracker(t *testing.T) {
 
 	h1 := common.Hash{1}
 	tr.mark(h1)
-	if !tr.consume(h1) {
-		t.Fatal("first consume of a marked hash should report local origin")
+	// Persistence: isLocal stays true across repeated checks (not consume-once).
+	for i := 0; i < 3; i++ {
+		if !tr.isLocal(h1) {
+			t.Fatalf("isLocal returned false on check %d; origin status must persist", i+1)
+		}
 	}
-	if tr.consume(h1) {
-		t.Fatal("second consume of the same hash should report not-local (consume-once)")
+	tr.clear(h1)
+	if tr.isLocal(h1) {
+		t.Fatal("cleared hash still reported as local")
 	}
 
-	// TTL expiry: a marked hash must not be considered local after its TTL.
+	// TTL expiry.
 	tr.mark(h1)
 	now = now.Add(2 * time.Minute)
-	if tr.consume(h1) {
-		t.Fatal("expired hash should not report local origin")
+	if tr.isLocal(h1) {
+		t.Fatal("expired hash still reported as local")
 	}
 
-	// Size cap: marking more than max hashes evicts the oldest entries.
+	// Size cap: marking more than max hashes evicts the oldest.
 	now = time.Unix(0, 0)
 	hashes := []common.Hash{{10}, {11}, {12}, {13}, {14}}
 	for _, h := range hashes {
@@ -303,7 +449,7 @@ func TestOriginTracker(t *testing.T) {
 	}
 	live := 0
 	for _, h := range hashes {
-		if tr.consume(h) {
+		if tr.isLocal(h) {
 			live++
 		}
 	}
@@ -312,5 +458,31 @@ func TestOriginTracker(t *testing.T) {
 	}
 	if live == 0 {
 		t.Fatal("origin tracker evicted everything; most recent marks should survive")
+	}
+}
+
+// TestStemHoldSet exercises the relay-held transaction set.
+func TestStemHoldSet(t *testing.T) {
+	s := &stemHoldSet{max: 2, txs: make(map[common.Hash]*types.Transaction)}
+
+	tx1 := makeLocalTestTx(0)
+	tx2 := makeLocalTestTx(1)
+	tx3 := makeLocalTestTx(2)
+
+	s.add(tx1)
+	if got := s.get(tx1.Hash()); got == nil || got.Hash() != tx1.Hash() {
+		t.Fatal("held transaction not retrievable")
+	}
+	s.remove(tx1.Hash())
+	if s.get(tx1.Hash()) != nil {
+		t.Fatal("removed transaction still present")
+	}
+
+	// Cap eviction.
+	s.add(tx1)
+	s.add(tx2)
+	s.add(tx3)
+	if len(s.txs) > s.max {
+		t.Fatalf("stem-hold set kept %d entries, want at most %d", len(s.txs), s.max)
 	}
 }

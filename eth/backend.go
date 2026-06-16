@@ -45,6 +45,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/eth/gasprice"
+	dleproto "github.com/ethereum/go-ethereum/eth/protocols/dandelion"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/eth/tracers"
@@ -461,6 +462,11 @@ func (s *Ethereum) Protocols() []p2p.Protocol {
 	protos := eth.MakeProtocols((*ethHandler)(s.handler), s.networkID, s.discmix)
 	if s.config.SnapshotCache > 0 {
 		protos = append(protos, snap.MakeProtocols((*snapHandler)(s.handler), s.config.SnapV2)...)
+	}
+	// Advertise the Dandelion++ stem sub-protocol when network-origin privacy is
+	// enabled, so stem-phase transactions can be relayed to capable peers.
+	if s.config.DandelionEnabled {
+		protos = append(protos, dleproto.MakeProtocols((*dandelionHandler)(s.handler))...)
 	}
 	return protos
 }

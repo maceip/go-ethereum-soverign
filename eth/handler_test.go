@@ -114,16 +114,25 @@ func (p *testTxPool) GetMetadata(hash common.Hash) *txpool.TxMetadata {
 	return nil
 }
 
-// Add appends a batch of transactions to the pool, and notifies any
-// listeners if the addition channel is non nil
+// Add appends a batch of transactions to the pool, and notifies any listeners of
+// the newly seen transactions. Already-known transactions are deduplicated and do
+// not re-trigger an event, mirroring the real pool (and preventing re-broadcast
+// storms in tests).
 func (p *testTxPool) Add(txs []*types.Transaction, sync bool) []error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
+	var added []*types.Transaction
 	for _, tx := range txs {
+		if _, ok := p.pool[tx.Hash()]; ok {
+			continue
+		}
 		p.pool[tx.Hash()] = tx
+		added = append(added, tx)
 	}
-	p.txFeed.Send(core.NewTxsEvent{Txs: txs})
+	if len(added) > 0 {
+		p.txFeed.Send(core.NewTxsEvent{Txs: added})
+	}
 	return make([]error, len(txs))
 }
 

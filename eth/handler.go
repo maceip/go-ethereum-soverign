@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/eth/fetcher"
+	dleproto "github.com/ethereum/go-ethereum/eth/protocols/dandelion"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -137,9 +138,12 @@ type handler struct {
 	// Dandelion++ network-origin privacy (Phase 1). dandelion is nil when the
 	// feature is disabled, in which case the broadcast path behaves exactly like
 	// upstream go-ethereum.
-	dandelion    *dandelion.Router
-	dandelionCfg dandelion.Config
-	localOrigins *originTracker // hashes of locally-originated transactions
+	dandelion         *dandelion.Router
+	dandelionCfg      dandelion.Config
+	localOrigins      *originTracker              // hashes of locally-originated transactions
+	stemHold          *stemHoldSet                // relay-held stem transactions awaiting fluff/embargo
+	dandelionPeers    map[enode.ID]*dleproto.Peer // peers speaking the `dle` stem sub-protocol
+	dandelionPeerLock sync.RWMutex
 
 	requiredBlocks map[uint64]common.Hash
 
@@ -200,8 +204,10 @@ func newHandler(config *handlerConfig) (*handler, error) {
 	// broadcast path (see handler_dandelion.go).
 	if config.DandelionEnabled {
 		h.dandelionCfg = config.Dandelion
-		h.dandelion = dandelion.New(config.Dandelion)
+		h.dandelion = dandelion.New(config.Dandelion, config.NodeID)
 		h.localOrigins = newOriginTracker()
+		h.stemHold = newStemHoldSet()
+		h.dandelionPeers = make(map[enode.ID]*dleproto.Peer)
 		log.Info("Dandelion++ transaction-origin privacy enabled",
 			"stemprob", config.Dandelion.StemProbability,
 			"epoch", config.Dandelion.EpochDuration,
@@ -292,9 +298,6 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 		return err
 	}
 	defer h.unregisterPeer(peer.ID())
-
-	// Make the new peer eligible as a Dandelion++ stem successor.
-	h.updateDandelionPeers()
 
 	p := h.peers.peer(peer.ID())
 	if p == nil {
@@ -428,8 +431,6 @@ func (h *handler) unregisterPeer(id string) {
 	if err := h.peers.unregisterPeer(id); err != nil {
 		logger.Error("Ethereum peer removal failed", "err", err)
 	}
-	// Keep the Dandelion++ successor set in sync with the live peer set.
-	h.updateDandelionPeers()
 }
 
 func (h *handler) Start(maxPeers int) {
