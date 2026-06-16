@@ -37,18 +37,6 @@ func randField() common.Hash {
 
 func hv(h common.Hash) frontend.Variable { return new(big.Int).SetBytes(h[:]) }
 
-func setPath(dst *[MerkleDepth]frontend.Variable, src [MerkleDepth]common.Hash) {
-	for i := range src {
-		dst[i] = hv(src[i])
-	}
-}
-
-func setBits(dst *[MerkleDepth]frontend.Variable, src [MerkleDepth]uint8) {
-	for i := range src {
-		dst[i] = src[i]
-	}
-}
-
 // dummyInput builds a dummy input note (value 0) with a random nullifier and an
 // all-zero membership path (which is bypassed because IsDummy=1).
 func dummyInput() (InputNote, common.Hash) {
