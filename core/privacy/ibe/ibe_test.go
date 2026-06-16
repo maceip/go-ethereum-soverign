@@ -21,16 +21,17 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/ethereum/go-ethereum/core/privacy/keyper"
 	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 )
 
-// committee builds a DKG committee and the IBE master public key derived from it.
+// committee builds a committee and the IBE master public key derived from it. It
+// uses threshold.DealerSetup (rather than the keyper DKG) to avoid an import cycle
+// in this test; IBE correctness is independent of how the committee was generated.
 func committee(t *testing.T, tt, n int) (*MasterPublicKey, []*threshold.KeyShare, []*threshold.VerificationKey) {
 	t.Helper()
-	_, shares, vks, err := keyper.RunDKG(tt, n, rand.Reader)
+	_, shares, vks, err := threshold.DealerSetup(tt, n, rand.Reader)
 	if err != nil {
-		t.Fatalf("dkg: %v", err)
+		t.Fatalf("setup: %v", err)
 	}
 	mpk, err := DeriveMasterPublicKey(vks, tt)
 	if err != nil {
@@ -134,9 +135,9 @@ func TestIBEThreshold(t *testing.T) {
 func TestIBERejectsForeignShare(t *testing.T) {
 	const tt, n = 2, 3
 	mpk, shares, vks := committee(t, tt, n)
-	_, foreignShares, _, err := keyper.RunDKG(tt, n, rand.Reader)
+	_, foreignShares, _, err := threshold.DealerSetup(tt, n, rand.Reader)
 	if err != nil {
-		t.Fatalf("foreign dkg: %v", err)
+		t.Fatalf("foreign setup: %v", err)
 	}
 	const epoch = 5
 

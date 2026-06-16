@@ -23,208 +23,203 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core/privacy/threshold"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 )
 
-// roundTrip encrypts msg to eon, collects shares via the provider, and returns the
-// recovered plaintext.
-func roundTrip(t *testing.T, eon *threshold.PublicKey, provider *Provider, need int, msg []byte) []byte {
+const maxEpoch = ^uint64(0)
+
+// roundTrip encrypts msg for epoch, obtains the epoch key from the provider, and
+// returns the recovered plaintext.
+func roundTrip(t *testing.T, mpk *ibe.MasterPublicKey, provider *Provider, need int, epoch uint64, msg []byte) []byte {
 	t.Helper()
-	ct, err := threshold.Encrypt(eon, msg, rand.Reader)
+	ct, err := ibe.Encrypt(mpk, epoch, msg, rand.Reader)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	shares := provider.Shares(ct, need)
-	if len(shares) < need {
-		t.Fatalf("provider returned %d shares, want >= %d", len(shares), need)
+	sk := provider.EpochKey(epoch, need)
+	if sk == nil {
+		t.Fatalf("provider returned no epoch key for epoch %d", epoch)
 	}
-	got, err := threshold.Combine(need, ct, shares)
+	got, err := ibe.Decrypt(sk, ct)
 	if err != nil {
-		t.Fatalf("combine: %v", err)
+		t.Fatalf("decrypt: %v", err)
 	}
 	return got
 }
 
-// TestInmemNetworkEndToEnd bootstraps a committee, then encrypts and recovers a
-// message using shares collected from the in-process keyper network.
+// TestInmemNetworkEndToEnd bootstraps a committee and recovers a message using the
+// epoch key collected from the in-process keyper network.
 func TestInmemNetworkEndToEnd(t *testing.T) {
 	const tt, n = 3, 5
-	keypers, eon, _, err := Bootstrap(tt, n, rand.Reader)
+	keypers, mpk, vks, err := Bootstrap(tt, n, rand.Reader)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	provider := NewProvider(NewInmemTransport(keypers))
+	provider := NewProvider(NewInmemTransport(keypers, maxEpoch), vks)
 
 	msg := []byte("decrypted by the keyper network at inclusion")
-	if got := roundTrip(t, eon, provider, tt, msg); !bytes.Equal(got, msg) {
+	if got := roundTrip(t, mpk, provider, tt, 42, msg); !bytes.Equal(got, msg) {
 		t.Fatalf("got %q, want %q", got, msg)
 	}
 }
 
-// TestInmemBelowThreshold checks the provider yields nothing when fewer than the
-// threshold of keypers are available (committee-unavailable fallback).
+// TestInmemBelowThreshold checks the provider yields no key when fewer than the
+// threshold of keypers are available.
 func TestInmemBelowThreshold(t *testing.T) {
 	const tt, n = 3, 5
-	keypers, eon, _, err := Bootstrap(tt, n, rand.Reader)
+	keypers, _, vks, err := Bootstrap(tt, n, rand.Reader)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	// Only t-1 keypers online.
-	provider := NewProvider(NewInmemTransport(keypers[:tt-1]))
-	ct, _ := threshold.Encrypt(eon, []byte("secret"), rand.Reader)
-	if shares := provider.Shares(ct, tt); shares != nil {
-		t.Fatalf("got %d shares with too few keypers, want none", len(shares))
+	provider := NewProvider(NewInmemTransport(keypers[:tt-1], maxEpoch), vks)
+	if sk := provider.EpochKey(1, tt); sk != nil {
+		t.Fatal("got an epoch key with too few keypers")
+	}
+}
+
+// TestInmemTriggerGating checks a keyper releases no share for an epoch beyond the
+// trigger, so a future epoch's key cannot be assembled.
+func TestInmemTriggerGating(t *testing.T) {
+	const tt, n = 3, 5
+	keypers, _, vks, err := Bootstrap(tt, n, rand.Reader)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	// Trigger only up to epoch 10.
+	provider := NewProvider(NewInmemTransport(keypers, 10), vks)
+	if sk := provider.EpochKey(11, tt); sk != nil {
+		t.Fatal("released a key for an epoch beyond the trigger")
+	}
+	if sk := provider.EpochKey(10, tt); sk == nil {
+		t.Fatal("did not release a key for a triggered epoch")
 	}
 }
 
 // TestHTTPNetworkEndToEnd runs each keyper behind its own HTTP server and collects
-// shares over the network, exactly as independent keyper processes would.
+// the epoch key over the network.
 func TestHTTPNetworkEndToEnd(t *testing.T) {
 	const tt, n = 3, 5
-	keypers, eon, _, err := Bootstrap(tt, n, rand.Reader)
+	keypers, mpk, vks, err := Bootstrap(tt, n, rand.Reader)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	endpoints := make([]KeyperEndpoint, n)
-	for i, k := range keypers {
-		srv := httptest.NewServer(k.ServeMux())
-		defer srv.Close()
-		endpoints[i] = KeyperEndpoint{URL: srv.URL, VK: k.VerificationKey()}
-	}
-	provider := NewProvider(NewHTTPTransport(endpoints, 2*time.Second, ""))
+	urls := serveKeypers(t, keypers, "", true, maxEpoch)
+	provider := NewProvider(NewHTTPTransport(urls, 2*time.Second, ""), vks)
 
 	msg := []byte("recovered over HTTP from the keyper network")
-	if got := roundTrip(t, eon, provider, tt, msg); !bytes.Equal(got, msg) {
+	if got := roundTrip(t, mpk, provider, tt, 7, msg); !bytes.Equal(got, msg) {
 		t.Fatalf("got %q, want %q", got, msg)
 	}
 }
 
-// TestHTTPNetworkToleratesDownKeypers checks share collection still reaches the
-// threshold when some keyper endpoints are unreachable, but fails closed when too
-// many are down.
-func TestHTTPNetworkToleratesDownKeypers(t *testing.T) {
+// TestHTTPToleratesDownKeypers checks the epoch key is still assembled when some
+// keypers are unreachable, and fails closed when too many are down.
+func TestHTTPToleratesDownKeypers(t *testing.T) {
 	const tt, n = 3, 5
-	keypers, eon, _, err := Bootstrap(tt, n, rand.Reader)
+	keypers, mpk, vks, err := Bootstrap(tt, n, rand.Reader)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	endpoints := make([]KeyperEndpoint, 0, n)
-	live := 0
+	urls := make([]string, 0, n)
 	for i, k := range keypers {
-		if i < 3 { // only 3 of 5 keypers are up
+		if i < 3 {
 			srv := httptest.NewServer(k.ServeMux())
 			defer srv.Close()
-			endpoints = append(endpoints, KeyperEndpoint{URL: srv.URL, VK: k.VerificationKey()})
-			live++
+			urls = append(urls, srv.URL)
 		} else {
-			// Unreachable endpoint.
-			endpoints = append(endpoints, KeyperEndpoint{URL: "http://127.0.0.1:1", VK: k.VerificationKey()})
+			urls = append(urls, "http://127.0.0.1:1")
 		}
 	}
-	provider := NewProvider(NewHTTPTransport(endpoints, 500*time.Millisecond, ""))
-
+	provider := NewProvider(NewHTTPTransport(urls, 500*time.Millisecond, ""), vks)
 	msg := []byte("threshold met despite down keypers")
-	if got := roundTrip(t, eon, provider, tt, msg); !bytes.Equal(got, msg) {
+	if got := roundTrip(t, mpk, provider, tt, 3, msg); !bytes.Equal(got, msg) {
 		t.Fatalf("got %q, want %q", got, msg)
 	}
 }
 
-// TestRejectsForgedShare checks the transport rejects a share that does not verify
-// against the keyper's verification key (a dishonest keyper), so a forged share is
-// excluded while honest keypers still meet the threshold.
-func TestRejectsForgedShare(t *testing.T) {
+// TestHTTPAuthAndTrigger checks the server enforces the auth token and the enable
+// trigger.
+func TestHTTPAuthAndTrigger(t *testing.T) {
 	const tt, n = 2, 3
-	keypers, eon, _, err := Bootstrap(tt, n, rand.Reader)
+	keypers, mpk, vks, err := Bootstrap(tt, n, rand.Reader)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	// A keyper from an unrelated committee, re-labelled with index 2: its shares are
-	// well-formed but do not verify against this committee's verification key.
-	_, foreignShares, foreignVKs, err := threshold.DealerSetup(tt, n, rand.Reader)
-	if err != nil {
-		t.Fatalf("foreign committee: %v", err)
-	}
-	forgedKeyper := NewKeyper(
-		&threshold.KeyShare{Index: keypers[1].Index(), Secret: foreignShares[1].Secret},
-		&threshold.VerificationKey{Index: keypers[1].Index(), Point: foreignVKs[1].Point},
-	)
-
-	honest0 := httptest.NewServer(keypers[0].ServeMux())
-	defer honest0.Close()
-	forged := httptest.NewServer(forgedKeyper.ServeMux())
-	defer forged.Close()
-	honest2 := httptest.NewServer(keypers[2].ServeMux())
-	defer honest2.Close()
-
-	endpoints := []KeyperEndpoint{
-		{URL: honest0.URL, VK: keypers[0].VerificationKey()},
-		{URL: forged.URL, VK: keypers[1].VerificationKey()}, // forged shares fail this VK
-		{URL: honest2.URL, VK: keypers[2].VerificationKey()},
-	}
-	provider := NewProvider(NewHTTPTransport(endpoints, time.Second, ""))
-
-	// Honest keypers 0 and 2 meet the threshold of 2; the forged share is excluded.
-	msg := []byte("forged share excluded, honest threshold still met")
-	if got := roundTrip(t, eon, provider, tt, msg); !bytes.Equal(got, msg) {
-		t.Fatalf("got %q, want %q", got, msg)
-	}
-
-	// A transport over only the forged endpoint must yield no usable share.
-	forgedOnly := NewProvider(NewHTTPTransport([]KeyperEndpoint{
-		{URL: forged.URL, VK: keypers[1].VerificationKey()},
-	}, time.Second, ""))
-	ct, _ := threshold.Encrypt(eon, msg, rand.Reader)
-	if shares := forgedOnly.Shares(ct, 1); shares != nil {
-		t.Fatal("forged share passed verification")
-	}
-}
-
-// TestServerAuthAndTrigger checks the keyper Server enforces the authorization
-// token and the enable trigger, so shares are not released to arbitrary parties or
-// before the keyper is enabled.
-func TestServerAuthAndTrigger(t *testing.T) {
-	const tt, n = 2, 3
-	keypers, eon, _, err := Bootstrap(tt, n, rand.Reader)
-	if err != nil {
-		t.Fatalf("bootstrap: %v", err)
-	}
-	const token = "s3cr3t-proposer-token"
-
+	const token = "proposer-token"
 	servers := make([]*Server, n)
-	endpoints := make([]KeyperEndpoint, n)
+	urls := make([]string, n)
 	for i, k := range keypers {
 		servers[i] = NewServer(k, token)
 		srv := httptest.NewServer(servers[i].Handler())
 		defer srv.Close()
-		endpoints[i] = KeyperEndpoint{URL: srv.URL, VK: k.VerificationKey()}
+		urls[i] = srv.URL
 	}
 
-	ct, _ := threshold.Encrypt(eon, []byte("trigger me"), rand.Reader)
-
-	// Disabled keypers (trigger off): no shares even with the right token.
-	authed := NewProvider(NewHTTPTransport(endpoints, time.Second, token))
-	if shares := authed.Shares(ct, tt); shares != nil {
-		t.Fatal("disabled keypers released shares")
+	// Disabled: no key even with the right token.
+	authed := NewProvider(NewHTTPTransport(urls, time.Second, token), vks)
+	if sk := authed.EpochKey(1, tt); sk != nil {
+		t.Fatal("disabled keypers released a key")
 	}
-
-	// Enable release.
 	for _, s := range servers {
 		s.SetEnabled(true)
+		s.SetTriggerEpoch(maxEpoch)
 	}
+	// Wrong token: rejected.
+	noAuth := NewProvider(NewHTTPTransport(urls, time.Second, "wrong"), vks)
+	if sk := noAuth.EpochKey(1, tt); sk != nil {
+		t.Fatal("released a key to an unauthorized requester")
+	}
+	// Correct token and enabled: works.
+	msg := []byte("authorized and enabled")
+	if got := roundTrip(t, mpk, authed, tt, 1, msg); !bytes.Equal(got, msg) {
+		t.Fatalf("got %q, want %q", got, msg)
+	}
+}
 
-	// Wrong/empty token: rejected even though enabled.
-	noAuth := NewProvider(NewHTTPTransport(endpoints, time.Second, "wrong-token"))
-	if shares := noAuth.Shares(ct, tt); shares != nil {
-		t.Fatal("keypers released shares to an unauthorized requester")
+// TestRejectsForgedShare checks a keyper serving shares from an unrelated committee
+// is excluded by share verification, while honest keypers still meet the threshold.
+func TestRejectsForgedShare(t *testing.T) {
+	const tt, n = 2, 3
+	keypers, mpk, vks, err := Bootstrap(tt, n, rand.Reader)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
 	}
+	// Forge keyper index 2 with a share from another committee.
+	foreign, _, _, err := Bootstrap(tt, n, rand.Reader)
+	if err != nil {
+		t.Fatalf("foreign bootstrap: %v", err)
+	}
+	// A keyper holding a foreign committee's secret share at the same index: its
+	// epoch-key shares will not verify against this committee's verification key.
+	forged := NewKeyper(foreign[1].share, vks[1])
 
-	// Correct token and enabled: shares released.
-	got := authed.Shares(ct, tt)
-	if len(got) < tt {
-		t.Fatalf("authorized+enabled request got %d shares, want >= %d", len(got), tt)
+	honest0 := httptest.NewServer(keypers[0].ServeMux())
+	defer honest0.Close()
+	forgedSrv := httptest.NewServer(forged.ServeMux())
+	defer forgedSrv.Close()
+	honest2 := httptest.NewServer(keypers[2].ServeMux())
+	defer honest2.Close()
+
+	urls := []string{honest0.URL, forgedSrv.URL, honest2.URL}
+	provider := NewProvider(NewHTTPTransport(urls, time.Second, ""), vks)
+
+	msg := []byte("forged share excluded, honest threshold met")
+	if got := roundTrip(t, mpk, provider, tt, 9, msg); !bytes.Equal(got, msg) {
+		t.Fatalf("got %q, want %q", got, msg)
 	}
-	plain, err := threshold.Combine(tt, ct, got)
-	if err != nil || string(plain) != "trigger me" {
-		t.Fatalf("combine after authorized release failed: %v", err)
+}
+
+// serveKeypers starts an HTTP server per keyper and returns their base URLs.
+func serveKeypers(t *testing.T, keypers []*Keyper, token string, enabled bool, trigger uint64) []string {
+	t.Helper()
+	urls := make([]string, len(keypers))
+	for i, k := range keypers {
+		s := NewServer(k, token)
+		s.SetEnabled(enabled)
+		s.SetTriggerEpoch(trigger)
+		srv := httptest.NewServer(s.Handler())
+		t.Cleanup(srv.Close)
+		urls[i] = srv.URL
 	}
+	return urls
 }

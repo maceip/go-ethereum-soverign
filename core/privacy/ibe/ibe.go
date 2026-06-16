@@ -303,3 +303,87 @@ func randScalar(r io.Reader) (*big.Int, error) {
 		}
 	}
 }
+
+// g2Size is the marshalled size of a bn256 G2 point.
+var g2Size = len(g2Generator().Marshal())
+
+// Marshal serializes a ciphertext as:
+//
+//	epoch(8) | U(g2Size) | nonceLen(1) | nonce | payload
+func (ct *Ciphertext) Marshal() ([]byte, error) {
+	if ct == nil || ct.U == nil {
+		return nil, errMalformed
+	}
+	if len(ct.Nonce) > 255 {
+		return nil, errMalformed
+	}
+	u := ct.U.Marshal()
+	out := make([]byte, 8, 8+len(u)+1+len(ct.Nonce)+len(ct.Payload))
+	binary.BigEndian.PutUint64(out[:8], ct.Epoch)
+	out = append(out, u...)
+	out = append(out, byte(len(ct.Nonce)))
+	out = append(out, ct.Nonce...)
+	out = append(out, ct.Payload...)
+	return out, nil
+}
+
+// UnmarshalCiphertext parses the encoding produced by Ciphertext.Marshal.
+func UnmarshalCiphertext(b []byte) (*Ciphertext, error) {
+	if len(b) < 8+g2Size+1 {
+		return nil, errMalformed
+	}
+	epoch := binary.BigEndian.Uint64(b[:8])
+	u := new(bn256.G2)
+	if _, err := u.Unmarshal(b[8 : 8+g2Size]); err != nil {
+		return nil, fmt.Errorf("%w: %v", errMalformed, err)
+	}
+	rest := b[8+g2Size:]
+	nonceLen := int(rest[0])
+	rest = rest[1:]
+	if len(rest) < nonceLen {
+		return nil, errMalformed
+	}
+	nonce := append([]byte(nil), rest[:nonceLen]...)
+	payload := append([]byte(nil), rest[nonceLen:]...)
+	return &Ciphertext{Epoch: epoch, U: u, Nonce: nonce, Payload: payload}, nil
+}
+
+// Marshal serializes an epoch-key share as index(4) | Sigma(64).
+func (s *EpochKeyShare) Marshal() ([]byte, error) {
+	if s == nil || s.Sigma == nil {
+		return nil, errMalformed
+	}
+	out := make([]byte, 4, 4+64)
+	binary.BigEndian.PutUint32(out, s.Index)
+	return append(out, s.Sigma.Marshal()...), nil
+}
+
+// UnmarshalEpochKeyShare parses the encoding produced by EpochKeyShare.Marshal.
+func UnmarshalEpochKeyShare(b []byte) (*EpochKeyShare, error) {
+	if len(b) < 4 {
+		return nil, errMalformed
+	}
+	idx := binary.BigEndian.Uint32(b[:4])
+	sigma := new(bn256.G1)
+	if _, err := sigma.Unmarshal(b[4:]); err != nil {
+		return nil, fmt.Errorf("%w: %v", errMalformed, err)
+	}
+	return &EpochKeyShare{Index: idx, Sigma: sigma}, nil
+}
+
+// Marshal serializes the master public key (G2 point).
+func (mpk *MasterPublicKey) Marshal() ([]byte, error) {
+	if mpk == nil || mpk.Point == nil {
+		return nil, errParams
+	}
+	return mpk.Point.Marshal(), nil
+}
+
+// UnmarshalMasterPublicKey parses a master public key.
+func UnmarshalMasterPublicKey(b []byte) (*MasterPublicKey, error) {
+	p := new(bn256.G2)
+	if _, err := p.Unmarshal(b); err != nil {
+		return nil, fmt.Errorf("%w: %v", errParams, err)
+	}
+	return &MasterPublicKey{Point: p}, nil
+}

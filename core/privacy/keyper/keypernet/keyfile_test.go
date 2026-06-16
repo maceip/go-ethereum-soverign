@@ -22,14 +22,15 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/privacy/threshold"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 )
 
 // TestKeyFileRoundTrip checks a keyper's material survives save/load and the loaded
-// keyper still produces valid, verifiable decryption shares.
+// keyper still produces a valid, verifiable epoch-key share that combines with
+// another keyper's to decrypt.
 func TestKeyFileRoundTrip(t *testing.T) {
 	const tt, n = 2, 3
-	keypers, eon, _, err := Bootstrap(tt, n, rand.Reader)
+	keypers, mpk, vks, err := Bootstrap(tt, n, rand.Reader)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -45,28 +46,37 @@ func TestKeyFileRoundTrip(t *testing.T) {
 		t.Fatalf("index = %d, want %d", loaded.Index(), keypers[0].Index())
 	}
 
-	// The loaded keyper, combined with another original keyper, must decrypt.
-	ct, _ := threshold.Encrypt(eon, []byte("survives reload"), rand.Reader)
-	shares := []*threshold.DecryptionShare{loaded.DecryptionShare(ct), keypers[1].DecryptionShare(ct)}
-	if !threshold.VerifyShare(loaded.VerificationKey(), ct, shares[0]) {
-		t.Fatal("loaded keyper share failed verification")
+	const epoch = 5
+	ct, _ := ibe.Encrypt(mpk, epoch, []byte("survives reload"), rand.Reader)
+	s0, err := loaded.EpochShare(epoch)
+	if err != nil {
+		t.Fatalf("epoch share: %v", err)
 	}
-	got, err := threshold.Combine(tt, ct, shares)
+	if !ibe.VerifyEpochShare(loaded.VerificationKey(), epoch, s0) {
+		t.Fatal("reloaded keyper share failed verification")
+	}
+	s1, _ := keypers[1].EpochShare(epoch)
+	sk, err := ibe.CombineEpochKey(tt, epoch, []*ibe.EpochKeyShare{s0, s1})
+	if err != nil {
+		t.Fatalf("combine: %v", err)
+	}
+	got, err := ibe.Decrypt(sk, ct)
 	if err != nil || string(got) != "survives reload" {
-		t.Fatalf("combine with reloaded keyper: %v, %q", err, got)
+		t.Fatalf("decrypt with reloaded keyper: %v, %q", err, got)
 	}
+	_ = vks
 }
 
 // TestExportCommittee checks the committee export produces registry storage that a
-// keyper.Registry can read back.
+// keyper.Registry can read back as the IBE master public key.
 func TestExportCommittee(t *testing.T) {
 	const tt, n = 2, 3
-	_, eon, _, err := Bootstrap(tt, n, rand.Reader)
+	_, mpk, _, err := Bootstrap(tt, n, rand.Reader)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	addrs := []common.Address{{1}, {2}, {3}}
-	export, err := ExportCommittee(tt, eon, common.Address{0xaa}, addrs)
+	export, err := ExportCommittee(tt, mpk, common.Address{0xaa}, addrs)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}

@@ -23,9 +23,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	encbuf "github.com/ethereum/go-ethereum/core/privacy/encmempool"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 	"github.com/ethereum/go-ethereum/core/privacy/keyper"
 	"github.com/ethereum/go-ethereum/core/privacy/keyper/keypernet"
-	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
@@ -60,13 +60,13 @@ func privacyChainConfig() *params.ChainConfig {
 	}
 }
 
-func encEnvelopeFor(t *testing.T, pk *threshold.PublicKey, tx *types.Transaction) *encbuf.Envelope {
+func ibeEnvelope(t *testing.T, mpk *ibe.MasterPublicKey, epoch uint64, tx *types.Transaction) *encbuf.Envelope {
 	t.Helper()
 	raw, err := tx.MarshalBinary()
 	if err != nil {
 		t.Fatalf("marshal tx: %v", err)
 	}
-	ct, err := threshold.Encrypt(pk, raw, rand.Reader)
+	ct, err := ibe.Encrypt(mpk, epoch, raw, rand.Reader)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -78,22 +78,21 @@ func encEnvelopeFor(t *testing.T, pk *threshold.PublicKey, tx *types.Transaction
 	return env
 }
 
-// TestEncryptedInclusionDecryptsForBlock checks the eth-side block-inclusion source
-// end to end: a transaction threshold-encrypted to the committee, buffered in the
-// encrypted mempool, is decrypted for inclusion using the on-chain registry's
-// threshold and a committee share provider — while an already-included envelope
-// (nonce consumed) is dropped and not re-included.
-func TestEncryptedInclusionDecryptsForBlock(t *testing.T) {
-	const tt, n = 2, 3
+// TestEncryptedInclusionViaKeyperNetwork proves the full chain: a transaction
+// IBE-encrypted to the committee for an epoch is decrypted for block inclusion
+// using the epoch key released by the (in-process) keyper network, with the
+// committee threshold read from the on-chain registry; an already-included envelope
+// (nonce consumed) is dropped, and an envelope for a future epoch is not yet due.
+func TestEncryptedInclusionViaKeyperNetwork(t *testing.T) {
+	const tt, n = 3, 5
 	cfg := privacyChainConfig()
 	signer := types.LatestSigner(cfg)
 
-	// Trustless committee via DKG; registry installed in mock state.
-	eon, shares, _, err := keyper.RunDKG(tt, n, rand.Reader)
+	keypers, mpk, vks, err := keypernet.Bootstrap(tt, n, rand.Reader)
 	if err != nil {
-		t.Fatalf("dkg: %v", err)
+		t.Fatalf("keyper bootstrap: %v", err)
 	}
-	storage, err := keyper.BuildRegistryStorage(tt, eon, []common.Address{{1}, {2}, {3}})
+	storage, err := keyper.BuildRegistryStorageIBE(tt, mpk, []common.Address{{1}, {2}, {3}, {4}, {5}})
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
@@ -102,79 +101,36 @@ func TestEncryptedInclusionDecryptsForBlock(t *testing.T) {
 	from := crypto.PubkeyToAddress(key.PublicKey)
 	mkTx := func(nonce uint64) *types.Transaction {
 		return types.MustSignNewTx(key, signer, &types.DynamicFeeTx{
-			ChainID:   cfg.ChainID,
-			Nonce:     nonce,
-			GasTipCap: big.NewInt(1),
-			GasFeeCap: big.NewInt(1),
-			Gas:       21000,
-			To:        &common.Address{0xaa},
-			Value:     big.NewInt(1),
+			ChainID: cfg.ChainID, Nonce: nonce, GasTipCap: big.NewInt(1), GasFeeCap: big.NewInt(1),
+			Gas: 21000, To: &common.Address{0xaa}, Value: big.NewInt(7),
 		})
 	}
-	includable := mkTx(5) // sender nonce will be 5 -> include
-	stale := mkTx(3)      // nonce < sender nonce -> already included, drop
+	const blockEpoch = 1
+	includable := mkTx(5) // due (epoch 1) and nonce matches -> include
+	stale := mkTx(3)      // due but already included (nonce < state) -> drop
+	future := mkTx(9)     // targets a future epoch -> not yet due
 
 	pool := encbuf.NewPool(16)
-	pool.Add(encEnvelopeFor(t, eon, includable))
-	staleEnv := encEnvelopeFor(t, eon, stale)
+	pool.Add(ibeEnvelope(t, mpk, blockEpoch, includable))
+	staleEnv := ibeEnvelope(t, mpk, blockEpoch, stale)
 	pool.Add(staleEnv)
+	futureEnv := ibeEnvelope(t, mpk, 5, future)
+	pool.Add(futureEnv)
 
-	st := &mockAcctState{
-		regAddr: encRegistryAddr,
-		storage: storage,
-		nonces:  map[common.Address]uint64{from: 5},
-	}
-	src := newEncryptedTxSource(pool, encRegistryAddr, encbuf.NewLocalShareProvider(shares), cfg)
-
-	got := src.decrypt(&types.Header{Number: big.NewInt(1), Time: 1}, st)
-	if len(got) != 1 {
-		t.Fatalf("decrypted %d txs for inclusion, want 1", len(got))
-	}
-	if got[0].Hash() != includable.Hash() {
-		t.Fatal("included the wrong transaction")
-	}
-	// The stale (already-included) envelope must have been dropped from the pool.
-	if pool.Has(staleEnv.ID()) {
-		t.Fatal("stale envelope was not dropped after inclusion")
-	}
-}
-
-// TestEncryptedInclusionViaKeyperNetwork proves the full chain: a transaction
-// encrypted to a DKG-generated committee is decrypted for block inclusion using
-// decryption shares collected from the (in-process) keyper network, with the
-// committee threshold read from the on-chain registry.
-func TestEncryptedInclusionViaKeyperNetwork(t *testing.T) {
-	const tt, n = 3, 5
-	cfg := privacyChainConfig()
-	signer := types.LatestSigner(cfg)
-
-	// Stand up a keyper committee via DKG and install it in the registry.
-	keypers, eon, _, err := keypernet.Bootstrap(tt, n, rand.Reader)
-	if err != nil {
-		t.Fatalf("keyper bootstrap: %v", err)
-	}
-	storage, err := keyper.BuildRegistryStorage(tt, eon, []common.Address{{1}, {2}, {3}, {4}, {5}})
-	if err != nil {
-		t.Fatalf("registry: %v", err)
-	}
-
-	key, _ := crypto.GenerateKey()
-	from := crypto.PubkeyToAddress(key.PublicKey)
-	tx := types.MustSignNewTx(key, signer, &types.DynamicFeeTx{
-		ChainID: cfg.ChainID, Nonce: 0, GasTipCap: big.NewInt(1), GasFeeCap: big.NewInt(1),
-		Gas: 21000, To: &common.Address{0xaa}, Value: big.NewInt(7),
-	})
-	pool := encbuf.NewPool(16)
-	pool.Add(encEnvelopeFor(t, eon, tx))
-
-	// Decryption shares come from the keyper network, not a local key.
-	provider := keypernet.NewProvider(keypernet.NewInmemTransport(keypers))
+	// Keyper network triggered up to the current block epoch only.
+	provider := keypernet.NewProvider(keypernet.NewInmemTransport(keypers, blockEpoch), vks)
 	src := newEncryptedTxSource(pool, encRegistryAddr, provider, cfg)
 
-	st := &mockAcctState{regAddr: encRegistryAddr, storage: storage, nonces: map[common.Address]uint64{from: 0}}
-	got := src.decrypt(&types.Header{Number: big.NewInt(1), Time: 1}, st)
-	if len(got) != 1 || got[0].Hash() != tx.Hash() {
-		t.Fatalf("keyper-network decryption did not recover the transaction for inclusion")
+	st := &mockAcctState{regAddr: encRegistryAddr, storage: storage, nonces: map[common.Address]uint64{from: 5}}
+	got := src.decrypt(&types.Header{Number: big.NewInt(blockEpoch), Time: 1}, st)
+	if len(got) != 1 || got[0].Hash() != includable.Hash() {
+		t.Fatalf("keyper-network decryption did not recover exactly the includable tx (got %d)", len(got))
+	}
+	if pool.Has(staleEnv.ID()) {
+		t.Fatal("already-included envelope was not dropped")
+	}
+	if !pool.Has(futureEnv.ID()) {
+		t.Fatal("future-epoch envelope should remain buffered until its epoch is due")
 	}
 }
 
@@ -185,11 +141,11 @@ func TestEncryptedInclusionGatedByFork(t *testing.T) {
 	cfg := privacyChainConfig()
 	cfg.Privacy1Time = nil // fork disabled
 
-	eon, shares, _, err := keyper.RunDKG(tt, n, rand.Reader)
+	keypers, mpk, vks, err := keypernet.Bootstrap(tt, n, rand.Reader)
 	if err != nil {
-		t.Fatalf("dkg: %v", err)
+		t.Fatalf("bootstrap: %v", err)
 	}
-	storage, _ := keyper.BuildRegistryStorage(tt, eon, []common.Address{{1}, {2}, {3}})
+	storage, _ := keyper.BuildRegistryStorageIBE(tt, mpk, []common.Address{{1}, {2}, {3}})
 
 	signer := types.LatestSigner(cfg)
 	key, _ := crypto.GenerateKey()
@@ -198,11 +154,11 @@ func TestEncryptedInclusionGatedByFork(t *testing.T) {
 		Gas: 21000, To: &common.Address{0xaa}, Value: big.NewInt(1),
 	})
 	pool := encbuf.NewPool(16)
-	pool.Add(encEnvelopeFor(t, eon, tx))
+	pool.Add(ibeEnvelope(t, mpk, 1, tx))
 
+	provider := keypernet.NewProvider(keypernet.NewInmemTransport(keypers, ^uint64(0)), vks)
+	src := newEncryptedTxSource(pool, encRegistryAddr, provider, cfg)
 	st := &mockAcctState{regAddr: encRegistryAddr, storage: storage, nonces: map[common.Address]uint64{}}
-	src := newEncryptedTxSource(pool, encRegistryAddr, encbuf.NewLocalShareProvider(shares), cfg)
-
 	if got := src.decrypt(&types.Header{Number: big.NewInt(1), Time: 1}, st); got != nil {
 		t.Fatalf("decrypted %d txs with Privacy1 inactive, want none", len(got))
 	}

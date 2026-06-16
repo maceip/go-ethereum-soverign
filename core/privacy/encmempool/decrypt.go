@@ -18,18 +18,16 @@ package encmempool
 
 import (
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/privacy/threshold"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// ShareProvider supplies threshold decryption shares for a ciphertext at inclusion
-// time. In production it is backed by the keyper network, which releases shares
-// when the per-epoch decryption trigger fires; a single-operator devnet may back
-// it with locally-held committee shares (see LocalShareProvider). It returns fewer
-// than `threshold` shares (or none) when the committee has not released enough,
-// which makes the affected transaction stay encrypted.
-type ShareProvider interface {
-	Shares(ct *threshold.Ciphertext, threshold int) []*threshold.DecryptionShare
+// EpochKeyProvider supplies the committee epoch key for a given epoch at inclusion
+// time, or nil if it has not been released (the decryption trigger for that epoch
+// has not fired, or too few keypers are available). In production it is backed by
+// the keyper network. threshold is the committee decryption threshold.
+type EpochKeyProvider interface {
+	EpochKey(epoch uint64, threshold int) *ibe.EpochKey
 }
 
 // DecryptedTx pairs a recovered inner transaction with the envelope it came from,
@@ -39,67 +37,45 @@ type DecryptedTx struct {
 	EnvelopeID common.Hash
 }
 
-// Decrypt recovers inner transactions from the given envelopes using the share
-// provider and threshold t. Recovery of one envelope never aborts the batch: an
-// envelope is skipped when its ciphertext is malformed, the committee has not
-// released t shares, the combined plaintext fails authentication, or the plaintext
+// Decrypt recovers inner transactions from envelopes whose epoch decryption key has
+// been released by the committee. Envelopes are grouped by epoch and one epoch key
+// is fetched per epoch; each ciphertext is then decrypted and decoded. Recovery
+// never aborts the batch: an envelope is skipped when its ciphertext is malformed,
+// its epoch key has not been released, the IBE decryption fails, or the plaintext
 // does not decode to a transaction. This "skip, don't abort" behaviour is the
-// committee-unavailable fallback — one undecryptable envelope cannot stall block
-// building.
-func Decrypt(envelopes []*Envelope, t int, provider ShareProvider) []DecryptedTx {
-	if t < 1 || provider == nil {
+// committee-unavailable fallback.
+func Decrypt(envelopes []*Envelope, threshold int, provider EpochKeyProvider) []DecryptedTx {
+	if threshold < 1 || provider == nil {
 		return nil
 	}
+	// Cache epoch keys so each epoch is fetched/combined at most once per call.
+	keys := make(map[uint64]*ibe.EpochKey)
+	fetched := make(map[uint64]bool)
+
 	out := make([]DecryptedTx, 0, len(envelopes))
 	for _, env := range envelopes {
-		ct, err := threshold.UnmarshalCiphertext(env.Ciphertext)
+		ct, err := ibe.UnmarshalCiphertext(env.Ciphertext)
 		if err != nil {
 			continue
 		}
-		shares := provider.Shares(ct, t)
-		if len(shares) < t {
-			continue // committee has not released enough shares yet
+		key, ok := keys[ct.Epoch]
+		if !ok && !fetched[ct.Epoch] {
+			key = provider.EpochKey(ct.Epoch, threshold)
+			keys[ct.Epoch] = key
+			fetched[ct.Epoch] = true
 		}
-		plaintext, err := threshold.Combine(t, ct, shares)
+		if key == nil {
+			continue // epoch key not released; transaction stays encrypted
+		}
+		plaintext, err := ibe.Decrypt(key, ct)
 		if err != nil {
 			continue
 		}
 		tx := new(types.Transaction)
 		if err := tx.UnmarshalBinary(plaintext); err != nil {
-			continue // plaintext is not a transaction
+			continue
 		}
 		out = append(out, DecryptedTx{Tx: tx, EnvelopeID: env.ID()})
-	}
-	return out
-}
-
-// LocalShareProvider holds committee key shares in-process and produces decryption
-// shares itself.
-//
-// DEVNET ONLY. A single party holding the whole committee defeats the threshold
-// trust model entirely. Production releases shares through the keyper network — a
-// ShareProvider that collects shares from independent keyper processes — never from
-// one process. This type exists for tests and single-operator devnets, and is
-// labelled to make that misuse obvious.
-type LocalShareProvider struct {
-	keyShares []*threshold.KeyShare
-}
-
-// NewLocalShareProvider builds a devnet-only share provider from locally-held
-// committee key shares.
-func NewLocalShareProvider(shares []*threshold.KeyShare) *LocalShareProvider {
-	return &LocalShareProvider{keyShares: shares}
-}
-
-// Shares produces up to t decryption shares for ct from the locally-held key
-// shares, or nil if fewer than t are held.
-func (p *LocalShareProvider) Shares(ct *threshold.Ciphertext, t int) []*threshold.DecryptionShare {
-	if len(p.keyShares) < t {
-		return nil
-	}
-	out := make([]*threshold.DecryptionShare, 0, t)
-	for i := 0; i < t; i++ {
-		out = append(out, p.keyShares[i].Decrypt(ct))
 	}
 	return out
 }

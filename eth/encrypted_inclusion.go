@@ -18,7 +18,8 @@ package eth
 
 import (
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/privacy/encmempool"
+	encbuf "github.com/ethereum/go-ethereum/core/privacy/encmempool"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 	"github.com/ethereum/go-ethereum/core/privacy/keyper"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -28,14 +29,20 @@ import (
 )
 
 // encryptedTxSource implements miner.EncryptedTxSource: at block-building time it
-// decrypts the threshold-encrypted envelopes the encrypted mempool is holding,
-// using committee decryption shares from a ShareProvider, and returns the recovered
-// inner transactions for direct inclusion in the block. Decrypted transactions are
+// decrypts the threshold-IBE-encrypted envelopes the encrypted mempool is holding,
+// using per-epoch committee keys released by the keyper network, and returns the
+// recovered inner transactions for direct inclusion. Decrypted transactions are
 // never added to the public pool, so their contents stay hidden until inclusion.
+//
+// The block being built defines the current epoch (its block number). Only
+// envelopes whose target epoch is due (<= the block epoch) are attempted, and a
+// transaction is recovered only if the committee has released that epoch's key —
+// so a transaction targeted at a future epoch is cryptographically undecryptable
+// until that epoch arrives.
 type encryptedTxSource struct {
-	pool        *encmempool.Pool
+	pool        *encbuf.Pool
 	registry    *keyper.Registry
-	provider    encmempool.ShareProvider
+	provider    encbuf.EpochKeyProvider
 	chainConfig *params.ChainConfig
 }
 
@@ -48,7 +55,7 @@ type accountState interface {
 	GetNonce(addr common.Address) uint64
 }
 
-func newEncryptedTxSource(pool *encmempool.Pool, registryAddr common.Address, provider encmempool.ShareProvider, cfg *params.ChainConfig) *encryptedTxSource {
+func newEncryptedTxSource(pool *encbuf.Pool, registryAddr common.Address, provider encbuf.EpochKeyProvider, cfg *params.ChainConfig) *encryptedTxSource {
 	return &encryptedTxSource{
 		pool:        pool,
 		registry:    keyper.NewRegistry(registryAddr),
@@ -70,7 +77,6 @@ func (s *encryptedTxSource) decrypt(header *types.Header, st accountState) []*ty
 	if s == nil || s.pool == nil || s.provider == nil || st == nil {
 		return nil
 	}
-	// Encrypted-mempool inclusion is gated by the privacy fork.
 	if !s.chainConfig.IsPrivacy1(header.Number, header.Time) {
 		return nil
 	}
@@ -78,18 +84,30 @@ func (s *encryptedTxSource) decrypt(header *types.Header, st accountState) []*ty
 	if t < 1 {
 		return nil
 	}
-	envelopes := s.pool.Pending()
-	if len(envelopes) == 0 {
-		return nil
+	blockEpoch := header.Number.Uint64()
+
+	// Only attempt envelopes whose target epoch is due for this block.
+	all := s.pool.Pending()
+	due := make([]*encbuf.Envelope, 0, len(all))
+	for _, env := range all {
+		ct, err := ibe.UnmarshalCiphertext(env.Ciphertext)
+		if err != nil {
+			s.pool.Remove(env.ID()) // not an IBE ciphertext; drop junk
+			continue
+		}
+		if ct.Epoch <= blockEpoch {
+			due = append(due, env)
+		}
 	}
-	decrypted := encmempool.Decrypt(envelopes, t, s.provider)
+
+	decrypted := encbuf.Decrypt(due, t, s.provider)
 	signer := types.LatestSigner(s.chainConfig)
 
 	out := make([]*types.Transaction, 0, len(decrypted))
 	for _, d := range decrypted {
 		from, err := types.Sender(signer, d.Tx)
 		if err != nil {
-			s.pool.Remove(d.EnvelopeID) // not a usable transaction; drop it
+			s.pool.Remove(d.EnvelopeID)
 			continue
 		}
 		// An envelope whose inner transaction nonce is already consumed has been
@@ -102,7 +120,7 @@ func (s *encryptedTxSource) decrypt(header *types.Header, st accountState) []*ty
 	}
 	if len(out) > 0 {
 		encDecryptedMeter.Mark(int64(len(out)))
-		log.Debug("Decrypted encrypted-mempool transactions for inclusion", "count", len(out))
+		log.Debug("Decrypted encrypted-mempool transactions for inclusion", "count", len(out), "epoch", blockEpoch)
 	}
 	return out
 }

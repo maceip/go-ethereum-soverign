@@ -16,47 +16,42 @@
 
 // Package keypernet is the keyper network for the encrypted mempool: the service
 // that generates the committee key by distributed key generation and releases
-// threshold decryption shares so a block proposer can decrypt encrypted-mempool
+// per-epoch decryption keys so a block proposer can decrypt encrypted-mempool
 // transactions at inclusion time.
 //
-// It ties together the cryptographic pieces built elsewhere in this fork:
+// Decryption uses threshold identity-based encryption (core/privacy/ibe) with the
+// epoch as the identity. Each keyper holds one DKG share and releases its epoch-key
+// share sigma_i = s_i*H(epoch) only once the decryption trigger for that epoch has
+// fired; a threshold of shares combine to the epoch key SK_E = s*H(epoch) that
+// decrypts every transaction encrypted for that epoch. Because SK_E does not exist
+// until the keypers release it, transactions for a future epoch are
+// cryptographically undecryptable — the per-epoch trigger is enforced by the
+// cryptography, not only by keyper policy.
 //
-//   - core/privacy/keyper (DKG) generates each keyper's secret share and the
-//     committee (eon) public key, with no single party holding the master secret;
-//   - core/privacy/threshold provides encryption, per-share decryption, share
-//     verification, and Lagrange combination;
-//   - core/privacy/encmempool consumes the released shares (this package provides a
-//     ShareProvider) to decrypt envelopes during block building.
-//
-// A Keyper holds one DKG share and answers decryption-share requests. A Transport
-// collects a threshold of verified shares for a ciphertext from the keyper set; an
-// in-process transport is used for tests and single-operator devnets, and an HTTP
-// transport (http.go) connects independently-run keyper processes. Provider adapts
-// a Transport to the encmempool.ShareProvider the block builder expects.
+// The committee shares (s_i) and verification keys (V_i = s_i*G2) are those produced
+// by core/privacy/keyper's DKG. A Keyper releases epoch-key shares; a Transport
+// collects a threshold of verified shares for an epoch (in-process for tests and
+// single-operator devnets, HTTP for independent keyper processes); and Provider
+// adapts a Transport to the block builder's epoch-key provider.
 package keypernet
 
 import (
 	"errors"
 	"io"
 
-	"github.com/ethereum/go-ethereum/core/privacy/encmempool"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 	"github.com/ethereum/go-ethereum/core/privacy/keyper"
 	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 	"github.com/ethereum/go-ethereum/log"
 )
 
-// ErrInsufficientShares is returned when fewer than the threshold of valid shares
-// could be collected from the keyper set.
-var ErrInsufficientShares = errors.New("keypernet: insufficient decryption shares")
+// ErrInsufficientShares is returned when fewer than the threshold of valid epoch-key
+// shares could be collected from the keyper set.
+var ErrInsufficientShares = errors.New("keypernet: insufficient epoch-key shares")
 
 // Keyper is a single committee member. It holds one DKG secret share and the
-// matching public verification key, and produces a verifiable decryption share for
-// any ciphertext on request.
-//
-// In production a Keyper runs in its own process and only releases shares once the
-// decryption trigger for the relevant epoch has fired (so it cannot be coerced into
-// decrypting transactions before they are due for inclusion). The proposer requests
-// shares at block-build time, which is the trigger in this fork.
+// matching public verification key, and releases a verifiable epoch-key share for a
+// requested epoch.
 type Keyper struct {
 	share *threshold.KeyShare
 	vk    *threshold.VerificationKey
@@ -73,44 +68,59 @@ func (k *Keyper) Index() uint32 { return k.share.Index }
 // VerificationKey returns the keyper's public verification key.
 func (k *Keyper) VerificationKey() *threshold.VerificationKey { return k.vk }
 
-// DecryptionShare produces this keyper's decryption share for ct.
-func (k *Keyper) DecryptionShare(ct *threshold.Ciphertext) *threshold.DecryptionShare {
-	return k.share.Decrypt(ct)
+// EpochShare produces this keyper's epoch-key share sigma_i = s_i*H(epoch).
+func (k *Keyper) EpochShare(epoch uint64) (*ibe.EpochKeyShare, error) {
+	return ibe.EpochShare(k.share, epoch)
 }
 
-// Transport collects decryption shares for a ciphertext from the keyper network.
-// Implementations must return only shares that verify against the committee's
-// verification keys, and at most as many as requested.
+// Transport collects epoch-key shares for an epoch from the keyper network.
 type Transport interface {
-	Collect(ct *threshold.Ciphertext, need int) ([]*threshold.DecryptionShare, error)
+	Collect(epoch uint64) []*ibe.EpochKeyShare
 }
 
-// Provider adapts a Transport to the encmempool.ShareProvider interface the block
-// builder uses, so decrypt-at-inclusion runs against the live keyper network.
+// Provider combines epoch-key shares collected from a Transport into the epoch key,
+// verifying every share against the committee verification keys. It implements the
+// block builder's epoch-key provider (encmempool.EpochKeyProvider).
 type Provider struct {
 	transport Transport
+	vks       map[uint32]*threshold.VerificationKey
 }
 
-// NewProvider returns an encmempool.ShareProvider backed by the keyper network.
-func NewProvider(transport Transport) *Provider {
-	return &Provider{transport: transport}
+// NewProvider builds an epoch-key provider over a transport, verifying shares
+// against the given committee verification keys.
+func NewProvider(transport Transport, vks []*threshold.VerificationKey) *Provider {
+	m := make(map[uint32]*threshold.VerificationKey, len(vks))
+	for _, vk := range vks {
+		if vk != nil {
+			m[vk.Index] = vk
+		}
+	}
+	return &Provider{transport: transport, vks: m}
 }
 
-// Shares implements encmempool.ShareProvider. It returns nil when the keyper
-// network has not released a threshold of shares, which leaves the transaction
-// encrypted (the committee-unavailable fallback).
-func (p *Provider) Shares(ct *threshold.Ciphertext, t int) []*threshold.DecryptionShare {
-	shares, err := p.transport.Collect(ct, t)
-	if err != nil || len(shares) < t {
+// EpochKey collects, verifies, and combines a threshold of epoch-key shares for the
+// epoch. It returns nil when the keypers have not released enough valid shares
+// (the trigger has not fired, or too few keypers are available) — the
+// committee-unavailable fallback that leaves the transaction encrypted.
+func (p *Provider) EpochKey(epoch uint64, t int) *ibe.EpochKey {
+	if t < 1 {
 		return nil
 	}
-	return shares
+	verified := verifyEpochShares(p.vks, epoch, p.transport.Collect(epoch), t)
+	if len(verified) < t {
+		return nil
+	}
+	sk, err := ibe.CombineEpochKey(t, epoch, verified)
+	if err != nil {
+		return nil
+	}
+	return sk
 }
 
-// verify keeps only shares that verify against the supplied committee verification
-// keys, returning at most t of them.
-func verify(vks map[uint32]*threshold.VerificationKey, ct *threshold.Ciphertext, shares []*threshold.DecryptionShare, t int) []*threshold.DecryptionShare {
-	out := make([]*threshold.DecryptionShare, 0, t)
+// verifyEpochShares keeps only shares that verify against the committee
+// verification keys, returning at most t of them.
+func verifyEpochShares(vks map[uint32]*threshold.VerificationKey, epoch uint64, shares []*ibe.EpochKeyShare, t int) []*ibe.EpochKeyShare {
+	out := make([]*ibe.EpochKeyShare, 0, t)
 	seen := make(map[uint32]struct{}, t)
 	for _, s := range shares {
 		if s == nil {
@@ -120,8 +130,8 @@ func verify(vks map[uint32]*threshold.VerificationKey, ct *threshold.Ciphertext,
 			continue
 		}
 		vk := vks[s.Index]
-		if vk == nil || !threshold.VerifyShare(vk, ct, s) {
-			log.Debug("keypernet: rejecting invalid decryption share", "index", s.Index)
+		if vk == nil || !ibe.VerifyEpochShare(vk, epoch, s) {
+			log.Debug("keypernet: rejecting invalid epoch-key share", "index", s.Index, "epoch", epoch)
 			continue
 		}
 		seen[s.Index] = struct{}{}
@@ -133,47 +143,50 @@ func verify(vks map[uint32]*threshold.VerificationKey, ct *threshold.Ciphertext,
 	return out
 }
 
-// InmemTransport collects shares directly from in-process keypers. It is used for
-// tests and single-operator devnets; a production deployment uses HTTPTransport (or
-// another networked transport) across independent keyper processes.
+// InmemTransport collects epoch-key shares directly from in-process keypers, gated
+// by a trigger epoch: a keyper releases a share only for epochs at or below the
+// current trigger. It is used for tests and single-operator devnets.
 type InmemTransport struct {
 	keypers []*Keyper
-	vks     map[uint32]*threshold.VerificationKey
+	trigger uint64
 }
 
-// NewInmemTransport wires a transport to the given in-process keypers.
-func NewInmemTransport(keypers []*Keyper) *InmemTransport {
-	vks := make(map[uint32]*threshold.VerificationKey, len(keypers))
-	for _, k := range keypers {
-		vks[k.Index()] = k.VerificationKey()
+// NewInmemTransport wires a transport to the given in-process keypers. triggerEpoch
+// is the highest epoch for which shares may be released.
+func NewInmemTransport(keypers []*Keyper, triggerEpoch uint64) *InmemTransport {
+	return &InmemTransport{keypers: keypers, trigger: triggerEpoch}
+}
+
+// Collect gathers epoch-key shares from the in-process keypers, honoring the
+// trigger.
+func (t *InmemTransport) Collect(epoch uint64) []*ibe.EpochKeyShare {
+	if epoch > t.trigger {
+		return nil // epoch's decryption trigger has not fired
 	}
-	return &InmemTransport{keypers: keypers, vks: vks}
-}
-
-// Collect gathers and verifies up to t decryption shares from the in-process
-// keypers.
-func (t *InmemTransport) Collect(ct *threshold.Ciphertext, need int) ([]*threshold.DecryptionShare, error) {
-	shares := make([]*threshold.DecryptionShare, 0, len(t.keypers))
+	shares := make([]*ibe.EpochKeyShare, 0, len(t.keypers))
 	for _, k := range t.keypers {
-		shares = append(shares, k.DecryptionShare(ct))
+		s, err := k.EpochShare(epoch)
+		if err != nil {
+			continue
+		}
+		shares = append(shares, s)
 	}
-	verified := verify(t.vks, ct, shares, need)
-	if len(verified) < need {
-		return nil, ErrInsufficientShares
-	}
-	return verified, nil
+	return shares
 }
 
 // Bootstrap runs a t-of-n distributed key generation in-process and returns the
-// keypers, the committee (eon) public key, and the committee verification keys.
+// keypers, the IBE master public key (derived from the committee), and the
+// committee verification keys.
 //
 // DEVNET ONLY when run in one process: a single operator running every keyper holds
 // the whole committee and so provides no threshold trust. A production committee
-// runs the per-party DKG in core/privacy/keyper across independent keyper processes
-// and only the resulting eon key is published. Bootstrap exists for tests and for
-// standing up a single-operator devnet.
-func Bootstrap(t, n int, rand io.Reader) ([]*Keyper, *threshold.PublicKey, []*threshold.VerificationKey, error) {
-	eon, shares, vks, err := keyper.RunDKG(t, n, rand)
+// runs the per-party DKG in core/privacy/keyper across independent keyper processes.
+func Bootstrap(t, n int, rand io.Reader) ([]*Keyper, *ibe.MasterPublicKey, []*threshold.VerificationKey, error) {
+	_, shares, vks, err := keyper.RunDKG(t, n, rand)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	mpk, err := ibe.DeriveMasterPublicKey(vks, t)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -181,8 +194,5 @@ func Bootstrap(t, n int, rand io.Reader) ([]*Keyper, *threshold.PublicKey, []*th
 	for i := 0; i < n; i++ {
 		keypers[i] = NewKeyper(shares[i], vks[i])
 	}
-	return keypers, eon, vks, nil
+	return keypers, mpk, vks, nil
 }
-
-// Ensure Provider satisfies the block builder's expectation.
-var _ encmempool.ShareProvider = (*Provider)(nil)

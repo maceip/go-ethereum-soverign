@@ -43,6 +43,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -51,8 +52,12 @@ import (
 const (
 	slotThreshold   = 0
 	slotKeypersLen  = 1
-	slotEonKeyWord0 = 2
+	slotEonKeyWord0 = 2 // legacy threshold-ElGamal committee key (G1), words 0..1
 	slotEonKeyWord1 = 3
+	slotMPKWord0    = 4 // IBE master public key (G2 = s*G2), words 0..3
+	slotMPKWord1    = 5
+	slotMPKWord2    = 6
+	slotMPKWord3    = 7
 )
 
 var (
@@ -128,6 +133,60 @@ func (r *Registry) Configured(s StateReader) bool {
 		return false
 	}
 	return true
+}
+
+// MasterPublicKey returns the IBE master public key (mpk = s*G2) that wallets
+// encrypt encrypted-mempool transactions to, together with an epoch.
+func (r *Registry) MasterPublicKey(s StateReader) (*ibe.MasterPublicKey, error) {
+	words := [4]int64{slotMPKWord0, slotMPKWord1, slotMPKWord2, slotMPKWord3}
+	raw := make([]byte, 0, 128)
+	empty := true
+	for _, slot := range words {
+		w := s.GetState(r.Addr, common.BigToHash(big.NewInt(slot)))
+		if w != (common.Hash{}) {
+			empty = false
+		}
+		raw = append(raw, w.Bytes()...)
+	}
+	if empty {
+		return nil, ErrNoEonKey
+	}
+	mpk, err := ibe.UnmarshalMasterPublicKey(raw)
+	if err != nil {
+		return nil, ErrInvalidRegistry
+	}
+	return mpk, nil
+}
+
+// BuildRegistryStorageIBE returns the account storage that encodes the committee
+// for identity-based encryption: the threshold, keypers, and the IBE master public
+// key (mpk = s*G2). It is the encrypted-mempool registry installed at genesis (or
+// written by a registry contract); the eon (G1) slots are left unset.
+func BuildRegistryStorageIBE(t int, mpk *ibe.MasterPublicKey, keypers []common.Address) (map[common.Hash]common.Hash, error) {
+	if t < 1 || t > len(keypers) {
+		return nil, ErrInvalidRegistry
+	}
+	raw, err := mpk.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != 128 {
+		return nil, ErrInvalidRegistry
+	}
+	storage := map[common.Hash]common.Hash{
+		common.BigToHash(big.NewInt(slotThreshold)):  common.BigToHash(big.NewInt(int64(t))),
+		common.BigToHash(big.NewInt(slotKeypersLen)): common.BigToHash(big.NewInt(int64(len(keypers)))),
+		common.BigToHash(big.NewInt(slotMPKWord0)):   common.BytesToHash(raw[0:32]),
+		common.BigToHash(big.NewInt(slotMPKWord1)):   common.BytesToHash(raw[32:64]),
+		common.BigToHash(big.NewInt(slotMPKWord2)):   common.BytesToHash(raw[64:96]),
+		common.BigToHash(big.NewInt(slotMPKWord3)):   common.BytesToHash(raw[96:128]),
+	}
+	base := arrayBaseSlot(slotKeypersLen)
+	for i, addr := range keypers {
+		slot := new(big.Int).Add(base, new(big.Int).SetUint64(uint64(i)))
+		storage[common.BigToHash(slot)] = common.BytesToHash(addr.Bytes())
+	}
+	return storage, nil
 }
 
 // BuildRegistryStorage returns the account storage that encodes the given

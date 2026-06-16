@@ -229,6 +229,13 @@ that are never selected stay encrypted.
 - Verifiable distributed key generation — [`core/privacy/keyper/dkg.go`](core/privacy/keyper/dkg.go):
   a Pedersen/Feldman DKG so the committee key is generated with no single party
   holding the master secret (the trustless replacement for the trusted dealer).
+- Threshold identity-based encryption — [`core/privacy/ibe`](core/privacy/ibe):
+  Boneh-Franklin IBE over bn256 with the committee as private-key generator and the
+  epoch as identity. This is the cryptographic per-epoch trigger: a transaction
+  encrypted for epoch E is decryptable only with SK_E = s·H(E), which does not exist
+  until a threshold of keypers release it, and is useless for any other epoch. The
+  encrypted mempool encrypts with IBE, so future-epoch transactions are
+  cryptographically undecryptable — not merely gated by keyper policy.
 - Encrypted-tx envelope and buffer — [`core/privacy/encmempool`](core/privacy/encmempool):
   holds and moves only ciphertext; a never-included envelope exposes only
   ciphertext, recoverable solely with a committee threshold.
@@ -236,8 +243,9 @@ that are never selected stay encrypted.
   the `enc` sub-protocol floods envelopes across capable peers, advertised on the
   privacy network profile.
 - On-chain keyper registry — [`core/privacy/keyper`](core/privacy/keyper): the
-  consensus-readable committee/threshold/eon-key record, with a Solidity-compatible
-  storage layout and a genesis populator.
+  consensus-readable committee record (threshold, keypers, and the IBE master public
+  key wallets encrypt to), with a Solidity-compatible storage layout and a genesis
+  populator.
 - Decrypt-at-inclusion in block building — [`core/privacy/encmempool/decrypt.go`](core/privacy/encmempool/decrypt.go),
   [`eth/encrypted_inclusion.go`](eth/encrypted_inclusion.go), and the miner hook in
   [`miner/worker.go`](miner/worker.go): at block build, the proposer decrypts
@@ -268,24 +276,18 @@ that are never selected stay encrypted.
   written 0600; tested for round-trip and committee export.
 - Submit RPC — [`eth/encmempool_api.go`](eth/encmempool_api.go): `privacy_sendEncryptedTransaction`
   accepts a client-encrypted ciphertext envelope, validates it, and buffers+gossips
-  it (the node never sees plaintext); `privacy_committee` reports the eon key,
-  threshold, and keypers from the on-chain registry so wallets can encrypt.
+  it (the node never sees plaintext); `privacy_committee` reports the IBE master
+  public key, threshold, and keypers from the on-chain registry so wallets can
+  encrypt to the committee for a target epoch.
 
-**Remaining cryptographic hardening (documented, not faked):**
-
-- Per-epoch decryption keying (Boneh-Franklin-style threshold IBE). In the current
-  threshold-ElGamal scheme a decryption share does not bind to an epoch, so a keyper
-  cannot cryptographically prevent a requester from decrypting a not-yet-due
-  transaction — early decryption is prevented only by the keyper's auth/trigger
-  controls, which are operational, not cryptographic. Binding encryption to a
-  per-epoch committee key (so a ciphertext is undecryptable until the keypers
-  release that epoch's key) is the stronger design and the recommended next crypto
-  upgrade; the bn256 pairing already in use supports it.
+Per-epoch gating is now cryptographic: the keyper auth/enable/epoch-trigger controls
+are defence in depth, but even without them a future epoch's transactions are
+undecryptable because the epoch key does not exist until the committee releases it.
 
 Batched threshold encryption (USENIX Security 2024/2025) and BEAT-MEV are the
-research directions to track for efficiency; the current interfaces do not preclude
-moving to a batched scheme. Fair-ordering/PBS hooks are roadmap context (source
-phase 4), not part of this sprint.
+research directions to track for efficiency (one IBE key release per epoch is
+already efficient; batching would further amortise committee work). Fair-ordering/PBS
+hooks are roadmap context (source phase 4), not part of this sprint.
 
 ---
 

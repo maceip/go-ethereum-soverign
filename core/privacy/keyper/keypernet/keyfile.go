@@ -23,6 +23,7 @@ import (
 	"os"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 	"github.com/ethereum/go-ethereum/core/privacy/keyper"
 	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 )
@@ -88,11 +89,11 @@ func LoadKeyper(path string) (*Keyper, error) {
 }
 
 // CommitteeExport is the public committee description produced at bootstrap: the
-// eon key for wallets, and the keyper-registry storage to install at genesis so the
-// chain advertises the committee on-chain.
+// IBE master public key for wallets, and the keyper-registry storage to install at
+// genesis so the chain advertises the committee on-chain.
 type CommitteeExport struct {
 	Threshold       int               `json:"threshold"`
-	EonKey          string            `json:"eonKey"`          // hex of threshold.PublicKey.Marshal
+	MasterPublicKey string            `json:"masterPublicKey"` // hex of ibe.MasterPublicKey.Marshal
 	RegistryAddress common.Address    `json:"registryAddress"` // where to install the registry
 	RegistryStorage map[string]string `json:"registryStorage"` // slot(hex) -> value(hex)
 }
@@ -100,8 +101,8 @@ type CommitteeExport struct {
 // ExportCommittee builds the public committee export, including the registry
 // account storage (so it can be placed in a genesis alloc) for the given keyper
 // addresses.
-func ExportCommittee(t int, eon *threshold.PublicKey, registryAddr common.Address, keyperAddrs []common.Address) (*CommitteeExport, error) {
-	storage, err := keyper.BuildRegistryStorage(t, eon, keyperAddrs)
+func ExportCommittee(t int, mpk *ibe.MasterPublicKey, registryAddr common.Address, keyperAddrs []common.Address) (*CommitteeExport, error) {
+	storage, err := keyper.BuildRegistryStorageIBE(t, mpk, keyperAddrs)
 	if err != nil {
 		return nil, err
 	}
@@ -109,13 +110,13 @@ func ExportCommittee(t int, eon *threshold.PublicKey, registryAddr common.Addres
 	for slot, val := range storage {
 		hexStorage[slot.Hex()] = val.Hex()
 	}
-	eonBytes, err := eon.Marshal()
+	mpkBytes, err := mpk.Marshal()
 	if err != nil {
 		return nil, err
 	}
 	return &CommitteeExport{
 		Threshold:       t,
-		EonKey:          hex.EncodeToString(eonBytes),
+		MasterPublicKey: hex.EncodeToString(mpkBytes),
 		RegistryAddress: registryAddr,
 		RegistryStorage: hexStorage,
 	}, nil

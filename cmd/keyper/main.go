@@ -85,7 +85,7 @@ func bootstrap(args []string) {
 	}
 	registryAddr := common.HexToAddress(*registry)
 
-	keypers, eon, _, err := keypernet.Bootstrap(*t, *n, rand.Reader)
+	keypers, mpk, _, err := keypernet.Bootstrap(*t, *n, rand.Reader)
 	if err != nil {
 		fatalf("dkg: %v", err)
 	}
@@ -103,7 +103,7 @@ func bootstrap(args []string) {
 		}
 		fmt.Printf("wrote %s\n", path)
 	}
-	export, err := keypernet.ExportCommittee(*t, eon, registryAddr, keyperAddrs)
+	export, err := keypernet.ExportCommittee(*t, mpk, registryAddr, keyperAddrs)
 	if err != nil {
 		fatalf("export committee: %v", err)
 	}
@@ -122,6 +122,7 @@ func serve(args []string) {
 	addr := fs.String("addr", "127.0.0.1:9700", "HTTP listen address")
 	auth := fs.String("auth", "", "shared-secret token required from requesters (empty = open; not recommended)")
 	disabled := fs.Bool("disabled", false, "start with share release disabled (trigger off)")
+	trigger := fs.Uint64("trigger", ^uint64(0), "highest epoch for which to release keys (advance as epochs become due; default releases all due epochs)")
 	fs.Parse(args)
 
 	if *keyPath == "" {
@@ -132,12 +133,13 @@ func serve(args []string) {
 		fatalf("load key: %v", err)
 	}
 	server := keypernet.NewServer(k, *auth)
+	server.SetTriggerEpoch(*trigger)
 	server.SetEnabled(!*disabled)
 
 	if *auth == "" {
 		fmt.Fprintln(os.Stderr, "WARNING: serving with no auth token; any party can request decryption shares")
 	}
-	fmt.Printf("keyper %d serving on %s%s (enabled=%v)\n", k.Index(), *addr, keypernet.SharePath, !*disabled)
+	fmt.Printf("keyper %d serving on %s%s (enabled=%v)\n", k.Index(), *addr, keypernet.EpochSharePath, !*disabled)
 	if err := http.ListenAndServe(*addr, server.Handler()); err != nil {
 		fatalf("serve: %v", err)
 	}

@@ -467,11 +467,11 @@ func (s *Ethereum) Miner() *miner.Miner { return s.miner }
 // includes encrypted-mempool transactions, reading the committee from the on-chain
 // keyper registry at registryAddr and obtaining decryption shares from provider.
 //
-// In production, provider must be backed by the keyper network (which releases
-// shares from independent keyper processes). encmempool.NewLocalShareProvider is a
-// DEVNET-ONLY provider that holds committee shares in one process and therefore
-// provides no threshold trust — use it only on single-operator devnets.
-func (s *Ethereum) EnableEncryptedInclusion(registryAddr common.Address, provider encbuf.ShareProvider) error {
+// provider must be backed by the keyper network, which releases per-epoch
+// decryption keys from independent keyper processes (keypernet.NewProvider). A
+// single-operator devnet may back it with an in-process keyper set, which provides
+// no threshold trust and is for testing only.
+func (s *Ethereum) EnableEncryptedInclusion(registryAddr common.Address, provider encbuf.EpochKeyProvider) error {
 	if s.handler.encPool == nil {
 		return errors.New("encrypted mempool is not active (requires the privacy network profile)")
 	}

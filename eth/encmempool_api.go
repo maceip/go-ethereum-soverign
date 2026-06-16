@@ -23,8 +23,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	encbuf "github.com/ethereum/go-ethereum/core/privacy/encmempool"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 	"github.com/ethereum/go-ethereum/core/privacy/keyper"
-	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 )
 
 // EncMempoolAPI is the user-facing RPC for the encrypted mempool, served under the
@@ -41,26 +41,27 @@ type EncMempoolAPI struct {
 func NewEncMempoolAPI(eth *Ethereum) *EncMempoolAPI { return &EncMempoolAPI{eth: eth} }
 
 // CommitteeInfo describes the encrypted-mempool committee so wallets can encrypt to
-// it.
+// it (IBE: encrypt to the master public key together with a target epoch).
 type CommitteeInfo struct {
-	EonKey    hexutil.Bytes    `json:"eonKey"`    // committee public key (threshold.PublicKey)
-	Threshold hexutil.Uint64   `json:"threshold"` // decryption threshold
-	Keypers   []common.Address `json:"keypers"`   // committee member addresses
-	Registry  common.Address   `json:"registry"`  // keyper registry address
+	MasterPublicKey hexutil.Bytes    `json:"masterPublicKey"` // IBE master public key (ibe.MasterPublicKey)
+	Threshold       hexutil.Uint64   `json:"threshold"`       // decryption threshold
+	Keypers         []common.Address `json:"keypers"`         // committee member addresses
+	Registry        common.Address   `json:"registry"`        // keyper registry address
 }
 
-// SendEncryptedTransaction accepts a threshold-encrypted transaction envelope
-// (a marshalled threshold ciphertext whose plaintext is a canonical signed
-// transaction), buffers it in the encrypted mempool, and gossips it to peers. It
-// returns the envelope id. The node does not (and cannot) decrypt it here.
+// SendEncryptedTransaction accepts an IBE-encrypted transaction envelope (a
+// marshalled ibe.Ciphertext, bound to a target epoch, whose plaintext is a
+// canonical signed transaction), buffers it in the encrypted mempool, and gossips
+// it to peers. It returns the envelope id. The node does not (and cannot) decrypt
+// it here; it is decrypted by the keyper committee when its epoch is due.
 func (api *EncMempoolAPI) SendEncryptedTransaction(data hexutil.Bytes) (common.Hash, error) {
 	if api.eth.handler == nil || api.eth.handler.encPool == nil {
 		return common.Hash{}, errors.New("encrypted mempool is not active on this network")
 	}
-	// Validate that the payload is a well-formed threshold ciphertext before
-	// admitting it, so the buffer is not filled with junk.
-	if _, err := threshold.UnmarshalCiphertext(data); err != nil {
-		return common.Hash{}, fmt.Errorf("invalid threshold ciphertext: %w", err)
+	// Validate that the payload is a well-formed IBE ciphertext before admitting it,
+	// so the buffer is not filled with junk.
+	if _, err := ibe.UnmarshalCiphertext(data); err != nil {
+		return common.Hash{}, fmt.Errorf("invalid IBE ciphertext: %w", err)
 	}
 	env, err := encbuf.NewEnvelope(data)
 	if err != nil {
@@ -83,18 +84,18 @@ func (api *EncMempoolAPI) Committee() (*CommitteeInfo, error) {
 		return nil, err
 	}
 	reg := keyper.NewRegistry(addr)
-	eon, err := reg.EonKey(st)
+	mpk, err := reg.MasterPublicKey(st)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := eon.Marshal()
+	raw, err := mpk.Marshal()
 	if err != nil {
 		return nil, err
 	}
 	return &CommitteeInfo{
-		EonKey:    raw,
-		Threshold: hexutil.Uint64(reg.Threshold(st)),
-		Keypers:   reg.Keypers(st),
-		Registry:  addr,
+		MasterPublicKey: raw,
+		Threshold:       hexutil.Uint64(reg.Threshold(st)),
+		Keypers:         reg.Keypers(st),
+		Registry:        addr,
 	}, nil
 }

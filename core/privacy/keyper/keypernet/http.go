@@ -18,77 +18,78 @@ package keypernet
 
 import (
 	"bytes"
-	"crypto/subtle"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net/http"
 	"sync/atomic"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core/privacy/threshold"
+	"github.com/ethereum/go-ethereum/core/privacy/ibe"
 )
 
-// SharePath is the HTTP endpoint a keyper serves its decryption shares on. The
-// request body is a marshalled threshold.Ciphertext; the response body is a
-// marshalled threshold.DecryptionShare.
-const SharePath = "/keyper/decryption-share"
+// EpochSharePath is the HTTP endpoint a keyper serves epoch-key shares on. The
+// request body is the 8-byte big-endian epoch; the response body is a marshalled
+// ibe.EpochKeyShare.
+const EpochSharePath = "/keyper/epoch-key-share"
 
 // AuthHeader is the HTTP header carrying the shared-secret authorization token a
 // requester must present to a keyper.
 const AuthHeader = "X-Keyper-Auth"
 
-// maxShareRequestSize bounds an inbound ciphertext request.
 const maxShareRequestSize = 1 << 20
 
-// Server exposes a keyper's decryption-share endpoint over HTTP with two release
-// controls that together stop arbitrary parties from decrypting the encrypted
-// mempool at will:
+// Server exposes a keyper's epoch-key-share endpoint over HTTP with three release
+// controls that, together with the cryptographic per-epoch binding, stop arbitrary
+// parties from decrypting the encrypted mempool:
 //
-//   - authorization: a requester must present the shared-secret token (so only the
-//     block proposers the keyper serves can request shares); and
-//   - a trigger: the operator must enable release, and can pause it, so a keyper
-//     does not serve shares outside legitimate block production.
+//   - authorization: a requester must present the shared-secret token;
+//   - an enable trigger: the operator must enable release and can pause it; and
+//   - an epoch trigger: a keyper releases a share for epoch E only when E is at or
+//     below the current trigger epoch (advanced as blocks/epochs become due).
 //
-// These are operational controls appropriate to this fork's threshold-ElGamal
-// scheme, in which a decryption share does not by itself bind to an epoch. Binding
-// decryption to a per-epoch key so that ciphertexts are cryptographically
-// undecryptable before their epoch (Boneh-Franklin-style threshold IBE) is the
-// stronger design and is tracked as a follow-up; until then these controls are what
-// prevent out-of-band decryption.
+// Even without these controls a future epoch's transactions are cryptographically
+// undecryptable (the epoch key does not yet exist); the controls additionally stop
+// a keyper from being induced to release a current epoch's key out of band.
 type Server struct {
 	keyper    *Keyper
 	authToken string
 	enabled   atomic.Bool
+	trigger   atomic.Uint64
 }
 
 // NewServer wraps a keyper for HTTP serving. authToken is the shared secret a
-// requester must present; an empty token disables the auth check (devnet only).
-// The server starts disabled; call SetEnabled(true) once the keyper is ready to
-// release shares.
+// requester must present (empty disables the check; devnet only). The server starts
+// disabled with trigger epoch 0; call SetEnabled and SetTriggerEpoch as the node
+// becomes ready and epochs become due.
 func NewServer(k *Keyper, authToken string) *Server {
 	return &Server{keyper: k, authToken: authToken}
 }
 
-// SetEnabled turns share release on or off (the operator trigger).
+// SetEnabled turns epoch-key-share release on or off.
 func (s *Server) SetEnabled(enabled bool) { s.enabled.Store(enabled) }
 
-// Enabled reports whether the server is currently releasing shares.
+// Enabled reports whether release is currently on.
 func (s *Server) Enabled() bool { return s.enabled.Load() }
 
-// authorized reports whether the request carries the required auth token.
+// SetTriggerEpoch advances the highest epoch for which shares may be released.
+func (s *Server) SetTriggerEpoch(epoch uint64) { s.trigger.Store(epoch) }
+
+// TriggerEpoch returns the current trigger epoch.
+func (s *Server) TriggerEpoch() uint64 { return s.trigger.Load() }
+
 func (s *Server) authorized(r *http.Request) bool {
 	if s.authToken == "" {
 		return true
 	}
-	got := r.Header.Get(AuthHeader)
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) == 1
+	return subtleConstantTimeEqual(r.Header.Get(AuthHeader), s.authToken)
 }
 
-// Handler returns the http.Handler serving the keyper's shares, subject to the
-// authorization and trigger controls.
+// Handler returns the http.Handler serving the keyper's epoch-key shares subject to
+// the authorization, enable, and epoch-trigger controls.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc(SharePath, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(EpochSharePath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
 			return
@@ -102,95 +103,79 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxShareRequestSize))
-		if err != nil {
-			http.Error(w, "read error", http.StatusBadRequest)
+		if err != nil || len(body) < 8 {
+			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		ct, err := threshold.UnmarshalCiphertext(body)
-		if err != nil {
-			http.Error(w, "bad ciphertext", http.StatusBadRequest)
+		epoch := binary.BigEndian.Uint64(body[:8])
+		if epoch > s.trigger.Load() {
+			http.Error(w, "epoch not yet triggered", http.StatusServiceUnavailable)
 			return
 		}
-		share, err := s.keyper.DecryptionShare(ct).Marshal()
+		share, err := s.keyper.EpochShare(epoch)
 		if err != nil {
 			http.Error(w, "share error", http.StatusInternalServerError)
 			return
 		}
+		raw, err := share.Marshal()
+		if err != nil {
+			http.Error(w, "encode error", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(share)
+		w.Write(raw)
 	})
 	return mux
 }
 
-// ServeMux returns an open, always-enabled handler for the keyper's shares. It is a
-// convenience for tests and single-operator devnets; production keypers use Server
-// for authorization and trigger control.
+// ServeMux returns an open, always-enabled handler with the trigger raised to the
+// maximum, for tests and single-operator devnets. Production keypers use Server.
 func (k *Keyper) ServeMux() http.Handler {
 	s := NewServer(k, "")
 	s.SetEnabled(true)
+	s.SetTriggerEpoch(^uint64(0))
 	return s.Handler()
 }
 
-// KeyperEndpoint is a networked keyper: its share-serving base URL and its public
-// verification key (used to verify the shares it returns).
-type KeyperEndpoint struct {
-	URL string
-	VK  *threshold.VerificationKey
-}
-
-// HTTPTransport collects decryption shares from independently-run keyper processes
-// over HTTP, verifying each share against the keyper's verification key.
+// HTTPTransport collects epoch-key shares from independently-run keyper processes
+// over HTTP. Share verification is done by the Provider against committee
+// verification keys.
 type HTTPTransport struct {
-	endpoints []KeyperEndpoint
+	urls      []string
 	client    *http.Client
-	vks       map[uint32]*threshold.VerificationKey
 	authToken string
 }
 
-// NewHTTPTransport builds a transport over the given keyper endpoints. authToken is
+// NewHTTPTransport builds a transport over the given keyper base URLs. authToken is
 // the shared secret presented to each keyper (empty for open devnet keypers).
-func NewHTTPTransport(endpoints []KeyperEndpoint, timeout time.Duration, authToken string) *HTTPTransport {
+func NewHTTPTransport(urls []string, timeout time.Duration, authToken string) *HTTPTransport {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
-	vks := make(map[uint32]*threshold.VerificationKey, len(endpoints))
-	for _, e := range endpoints {
-		if e.VK != nil {
-			vks[e.VK.Index] = e.VK
-		}
-	}
 	return &HTTPTransport{
-		endpoints: endpoints,
+		urls:      urls,
 		client:    &http.Client{Timeout: timeout},
-		vks:       vks,
 		authToken: authToken,
 	}
 }
 
-// Collect requests decryption shares from each keyper endpoint until it has a
-// threshold of verified shares.
-func (t *HTTPTransport) Collect(ct *threshold.Ciphertext, need int) ([]*threshold.DecryptionShare, error) {
-	body, err := ct.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	shares := make([]*threshold.DecryptionShare, 0, len(t.endpoints))
-	for _, e := range t.endpoints {
-		share, err := t.fetch(e.URL, body)
+// Collect requests an epoch-key share from each keyper endpoint.
+func (t *HTTPTransport) Collect(epoch uint64) []*ibe.EpochKeyShare {
+	var body [8]byte
+	binary.BigEndian.PutUint64(body[:], epoch)
+	shares := make([]*ibe.EpochKeyShare, 0, len(t.urls))
+	for _, url := range t.urls {
+		share, err := t.fetch(url, body[:])
 		if err != nil {
-			continue // skip unreachable/erroring keypers; fallback handles shortfall
+			continue // unreachable/disabled/not-triggered keyper; provider handles shortfall
 		}
 		shares = append(shares, share)
 	}
-	verified := verify(t.vks, ct, shares, need)
-	if len(verified) < need {
-		return nil, ErrInsufficientShares
-	}
-	return verified, nil
+	return shares
 }
 
-func (t *HTTPTransport) fetch(baseURL string, body []byte) (*threshold.DecryptionShare, error) {
-	req, err := http.NewRequest(http.MethodPost, baseURL+SharePath, bytes.NewReader(body))
+func (t *HTTPTransport) fetch(baseURL string, body []byte) (*ibe.EpochKeyShare, error) {
+	req, err := http.NewRequest(http.MethodPost, baseURL+EpochSharePath, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -210,5 +195,17 @@ func (t *HTTPTransport) fetch(baseURL string, body []byte) (*threshold.Decryptio
 	if err != nil {
 		return nil, err
 	}
-	return threshold.UnmarshalDecryptionShare(raw)
+	return ibe.UnmarshalEpochKeyShare(raw)
+}
+
+// subtleConstantTimeEqual compares two strings in constant time.
+func subtleConstantTimeEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var v byte
+	for i := 0; i < len(a); i++ {
+		v |= a[i] ^ b[i]
+	}
+	return v == 0
 }
