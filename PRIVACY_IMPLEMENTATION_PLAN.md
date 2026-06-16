@@ -253,13 +253,22 @@ work. Dandelion++ origin privacy is the other Phase 1 network-privacy item.
        genesis populator for devnet and tests (round-trip, end-to-end encrypt with
        the registry-served key, unconfigured/parameter validation). DKG and key
        release are explicitly **not** in this package.
-     - **Stage 3b — keyper network + DKG (separate service, NEXT, largely
-       out-of-repo).** Keypers run distributed key generation to produce the eon
-       key (no single party holds the master secret), watch the chain for the
-       per-epoch decryption trigger, and release/aggregate per-epoch decryption
-       keys. This is a substantial standalone subsystem; it will be built with a
-       real, tested interface but a production DKG is a major effort and will not
-       be misrepresented as complete.
+     - **Stage 3b — keyper DKG and network.**
+       - *DKG protocol (DONE).* [`core/privacy/keyper/dkg.go`](core/privacy/keyper/dkg.go)
+         implements a Pedersen DKG with Feldman verifiable secret sharing over
+         bn256: each keyper deals a secret polynomial with public commitments,
+         every dealt share is verified (`s*G1 == Σ_k j^k C_k`), and the committee
+         eon key plus per-keyper Shamir shares and verification keys are aggregated.
+         The result is a drop-in trustless replacement for the trusted dealer (no
+         keyper knows the master secret). Tested for a working committee, the
+         threshold bound, Feldman rejection of tampered shares, and aggregation.
+         `RunDKG` drives all parties in-process (tests / single-operator devnet
+         bootstrap); the distributed run uses the same per-party API.
+       - *Keyper network (NEXT, out-of-repo service).* The transport that carries
+         DKG commitments/shares and per-epoch decryption shares between separate
+         keyper processes, watches the chain for the decryption trigger, and posts
+         the eon key to the registry. This is a standalone service built on the
+         tested per-party DKG/threshold APIs; it is not implemented in this repo.
      - **Stage 3c — decrypt-at-inclusion (consensus-adjacent).** At block building,
        apply the released epoch key to decrypt scheduled envelopes, recover and
        execute the inner transactions, with inclusion/ordering rules, fallback when
