@@ -98,12 +98,21 @@ one helper.
 
 ## Dandelion++ Design Corrections
 
-The first Dandelion++ implementation is wired into the live broadcast path and
-passes its origin-obfuscation tests, but a design review identified weaknesses
-that materially weaken the anonymity it provides. These corrections are
+The first Dandelion++ implementation was wired into the live broadcast path and
+passed its origin-obfuscation tests, but a design review identified weaknesses
+that materially weakened the anonymity it provided. These corrections are
 binding; where a correction conflicts with an earlier acceptance criterion or
 touchpoint, the correction wins. Until a correction lands, its gap must be stated
 plainly in the status docs rather than papered over.
+
+Status: all five corrections below are now implemented and tested. The stem is
+multi-hop via a dedicated `dle` sub-protocol ([`eth/protocols/dandelion`](eth/protocols/dandelion)),
+the originator never fluffs at hop 0, local-origin status persists across
+re-broadcasts, the router selects multiple deterministically-chosen successors per
+epoch, and every stemming node (originator or relay) arms its own embargo. Each
+correction's acceptance test lives in
+[`eth/handler_dandelion_test.go`](eth/handler_dandelion_test.go) or
+[`p2p/dandelion/dandelion_test.go`](p2p/dandelion/dandelion_test.go).
 
 ### Correction 1 — The originator must not fluff at its own hop
 
@@ -230,11 +239,14 @@ on a production path with tests or clearly quarantined as non-production tooling
 
 - Confidential ETH state transition work is Phase 1.
 - Stealth address support is Phase 1.
-- Dandelion++ network-origin privacy is Phase 1 and is now wired into live
-  propagation, but the initial design is single-hop and leaks the origin in
-  several cases (originator fluff, re-broadcast, non-RPC local paths). Until the
-  Design Corrections land, the guarantee it provides is "single-hop origin
-  obfuscation," not full Dandelion++, and the status docs must say so.
+- Dandelion++ network-origin privacy is Phase 1, wired into live propagation, and
+  the Design Corrections have landed: the stem is multi-hop over the `dle`
+  sub-protocol, the originator never diffuses by chance, local-origin status
+  persists across re-broadcasts, successors are multiple and epoch-stable, and
+  relays arm their own embargo. A residual remains: a stem-phase transaction the
+  originator holds in its own mempool can still be revealed via `eth` mempool
+  syncing to newly connected peers; this is documented as future work, not papered
+  over.
 - Encrypted mempool work is also Phase 1, but it can be staged after Dandelion++
   if the client needs an incremental network-privacy milestone.
 - Privacy precompiles are Phase 3 roadmap material and must remain gated by the

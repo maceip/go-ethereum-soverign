@@ -21,14 +21,17 @@ infrastructure the later phases compose on top of.
 | **Network-origin privacy** — Dandelion++ stem/fluff transaction propagation, wired into the live broadcast path with embargo failsafe | 1 | [`p2p/dandelion/dandelion.go`](p2p/dandelion/dandelion.go), [`eth/handler_dandelion.go`](eth/handler_dandelion.go) |
 
 > Network-origin privacy (Dandelion++) is a **Phase 1 core requirement** and is
-> **wired into the live transaction-propagation path**: locally-originated
-> transactions enter the stem phase by default, with an embargo failsafe and
-> ordinary gossip as the safety fallback. It is feature-gated behind `--dandelion`
-> and tunable without any consensus change. The **initial design is single-hop**
-> and still leaks the origin in several cases (originator fluff, re-broadcast,
-> non-RPC local paths); the guarantee today is "single-hop origin obfuscation,"
-> not full Dandelion++. The required fixes are tracked as the Design Corrections in
-> [`shape.md`](shape.md), the canonical scope document.
+> **wired into the live transaction-propagation path** as a **multi-hop stem**:
+> locally-originated transactions enter the stem phase by default and are relayed
+> over a dedicated [`dle`](eth/protocols/dandelion) sub-protocol that lets honest
+> relays continue the stem, with an embargo failsafe and ordinary gossip as the
+> safety fallback. The originator never diffuses by chance, local-origin status
+> persists across re-broadcasts, multiple epoch-stable successors are used, and
+> every stemming node arms its own embargo (the five Design Corrections in
+> [`shape.md`](shape.md)). It is feature-gated behind `--dandelion` and tunable
+> without any consensus change. One residual remains: a stem-phase transaction in
+> the originator's own mempool can still be revealed via `eth` mempool syncing to
+> new peers, tracked as future work in `shape.md`.
 
 ## Design notes
 

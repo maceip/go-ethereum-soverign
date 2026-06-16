@@ -81,7 +81,7 @@ the client as a consensus rule.
    - Extend the `privacy` RPC namespace: `shield`, `unshield`, `transfer`,
      `scanNotes` (using existing stealth scanning), `getMerkleProof`.
 
-6. **Network-origin privacy — Dandelion++ (Roadmap Ph.1 §3). _Wired; single-hop, corrections pending._**
+6. **Network-origin privacy — Dandelion++ (Roadmap Ph.1 §3). _Wired; multi-hop, corrections applied._**
    - The Dandelion++ router ([`p2p/dandelion/dandelion.go`](p2p/dandelion/dandelion.go))
      is wired into the live transaction-propagation path
      ([`eth/handler_dandelion.go`](eth/handler_dandelion.go)). Locally-originated
@@ -152,7 +152,7 @@ devnet verify each other's proofs.
 | EIP-5564 stealth addresses | Real; now hashes the compressed point per EIP-5564 (was x-coordinate only) |
 | Pedersen commitments + `PEDERSEN_COMMIT/ADD`/`PLONK_VERIFY` precompiles | Real, general-purpose; **not** load-bearing for the shielded flow (which uses MiMC + a direct verifier) |
 | Trusted setup | **Deterministic but insecure** (public seed); a real ceremony is the one remaining production blocker |
-| Network-origin privacy (Dandelion++) | **Wired into the live broadcast path, but single-hop.** Local-origin tracking, stem relay to an epoch-stable successor, embargo failsafe, and gossip fallback; feature-gated behind `--dandelion` and covered by multi-node origin-obfuscation tests. Known design weaknesses (originator fluff, single-hop stem, re-broadcast/non-RPC origin leaks, single successor) are tracked as the Design Corrections in `shape.md`; the guarantee today is single-hop origin obfuscation, not full Dandelion++. |
+| Network-origin privacy (Dandelion++) | **Wired into the live broadcast path as a multi-hop stem.** Persistent local-origin tracking, originator-never-fluffs routing, multi-hop stem relay over the dedicated `dle` sub-protocol with multiple epoch-stable successors, per-node embargo failsafe, and gossip fallback; feature-gated behind `--dandelion`. The five Design Corrections in `shape.md` are implemented and tested (origin obfuscation, multi-hop, relay embargo, re-broadcast persistence). Residual: stem-phase transactions in the originator's mempool can still leak via `eth` mempool syncing to new peers (future work). |
 | Gas costs for shielded ops / precompiles | Real charging, **placeholder values** pending benchmarking |
 
 ### How a shielded transaction is processed (implemented)
