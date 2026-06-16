@@ -242,15 +242,33 @@ work. Dandelion++ origin privacy is the other Phase 1 network-privacy item.
      gossips encrypted envelopes between capable peers, so the encrypted mempool is
      network-level rather than a local-only buffer, with multi-node propagation
      tests.
-   - **Stage 3 — committee decryption and block inclusion.** Share collection at
-     inclusion time, proposer-side combination/decryption before execution,
-     inclusion/ordering rules, fallback when the committee is unavailable, and
-     accountability logging. This stage is consensus-adjacent and gated behind the
-     privacy fork.
+   - **Stage 3 — keyper committee, decryption, and inclusion (full keyper model).**
+     Decryption is performed by an on-chain-registered keyper committee (Shutter
+     model), not a fixed devnet committee. Sub-stages:
+     - **Stage 3a — on-chain keyper registry (DONE).**
+       [`core/privacy/keyper`](core/privacy/keyper) is the consensus-readable
+       record of the keyper set, threshold, and committee ("eon") public key,
+       stored in account storage with a Solidity-compatible layout so a registry
+       contract can write it and the client can read it from state. Includes a
+       genesis populator for devnet and tests (round-trip, end-to-end encrypt with
+       the registry-served key, unconfigured/parameter validation). DKG and key
+       release are explicitly **not** in this package.
+     - **Stage 3b — keyper network + DKG (separate service, NEXT, largely
+       out-of-repo).** Keypers run distributed key generation to produce the eon
+       key (no single party holds the master secret), watch the chain for the
+       per-epoch decryption trigger, and release/aggregate per-epoch decryption
+       keys. This is a substantial standalone subsystem; it will be built with a
+       real, tested interface but a production DKG is a major effort and will not
+       be misrepresented as complete.
+     - **Stage 3c — decrypt-at-inclusion (consensus-adjacent).** At block building,
+       apply the released epoch key to decrypt scheduled envelopes, recover and
+       execute the inner transactions, with inclusion/ordering rules, fallback when
+       the committee does not release in time, and decryption-share accountability
+       logging. Gated behind the Privacy1 fork.
 
    Batched threshold encryption (USENIX Security 2024/2025) and BEAT-MEV are the
-   research directions to track for Stage 3 efficiency; the Stage 1 interfaces do
-   not preclude moving to a batched scheme.
+   research directions to track for Stage 3b/3c efficiency; the Stage 1 interfaces
+   do not preclude moving to a batched scheme.
 
 2. **Fair ordering & PBS hooks (Roadmap Ph.4 §3).**
    - Expose an ordering hook in the miner/builder path
