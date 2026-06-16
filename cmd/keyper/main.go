@@ -42,6 +42,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/privacy/keyper/keypernet"
@@ -122,7 +125,9 @@ func serve(args []string) {
 	addr := fs.String("addr", "127.0.0.1:9700", "HTTP listen address")
 	auth := fs.String("auth", "", "shared-secret token required from requesters (empty = open; not recommended)")
 	disabled := fs.Bool("disabled", false, "start with share release disabled (trigger off)")
-	trigger := fs.Uint64("trigger", ^uint64(0), "highest epoch for which to release keys (advance as epochs become due; default releases all due epochs)")
+	trigger := fs.Uint64("trigger", 0, "initial highest epoch for which to release keys")
+	chainhead := fs.String("chainhead", "", "JSON-RPC URL of a node to follow; advances the release trigger to the chain head so future-epoch keys are never released")
+	poll := fs.Duration("poll", 2*time.Second, "chain-head poll interval")
 	fs.Parse(args)
 
 	if *keyPath == "" {
@@ -136,6 +141,15 @@ func serve(args []string) {
 	server.SetTriggerEpoch(*trigger)
 	server.SetEnabled(!*disabled)
 
+	// Follow the chain head: a keyper must only release an epoch's key once that
+	// epoch is due, so the release trigger tracks the current block number. Without
+	// this, -trigger is a static bound the operator advances manually.
+	if *chainhead != "" {
+		go followChainHead(*chainhead, *poll, server)
+	} else {
+		fmt.Fprintln(os.Stderr, "WARNING: no -chainhead; the release trigger is static and must be advanced manually")
+	}
+
 	if *auth == "" {
 		fmt.Fprintln(os.Stderr, "WARNING: serving with no auth token; any party can request decryption shares")
 	}
@@ -143,6 +157,49 @@ func serve(args []string) {
 	if err := http.ListenAndServe(*addr, server.Handler()); err != nil {
 		fatalf("serve: %v", err)
 	}
+}
+
+// followChainHead polls a node's eth_blockNumber and advances the keyper's release
+// trigger to the head block number, so the keyper only releases keys for epochs at
+// or below the current chain height.
+func followChainHead(url string, interval time.Duration, server *keypernet.Server) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var last uint64
+	for range ticker.C {
+		head, err := blockNumber(url)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "keyper: chain-head poll failed: %v\n", err)
+			continue
+		}
+		if head != last {
+			server.SetTriggerEpoch(head)
+			last = head
+		}
+	}
+}
+
+// blockNumber queries eth_blockNumber over JSON-RPC.
+func blockNumber(url string) (uint64, error) {
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+	resp, err := http.Post(url, "application/json", body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Result string `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	if out.Error != nil {
+		return 0, fmt.Errorf("rpc error: %s", out.Error.Message)
+	}
+	return strconv.ParseUint(strings.TrimPrefix(out.Result, "0x"), 16, 64)
 }
 
 func fatalf(format string, args ...any) {
