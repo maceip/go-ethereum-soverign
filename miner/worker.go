@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -608,7 +609,53 @@ func (miner *Miner) fillTransactions(ctx context.Context, interrupt *atomic.Int3
 			return err
 		}
 	}
+	// Include decrypted encrypted-mempool transactions directly in the block. These
+	// come from the threshold-encrypted mempool and are decrypted at inclusion time
+	// by the keyper committee; committing them here (never via the public pool)
+	// keeps their contents hidden until they are in a block.
+	if err := miner.commitEncryptedTransactions(ctx, env, interrupt); err != nil {
+		return err
+	}
 	return nil
+}
+
+// commitEncryptedTransactions decrypts pending encrypted-mempool envelopes for the
+// block being built and commits the recovered transactions directly. It is a no-op
+// when no encrypted-tx source is configured or none decrypt.
+func (miner *Miner) commitEncryptedTransactions(ctx context.Context, env *environment, interrupt *atomic.Int32) error {
+	if miner.encSource == nil {
+		return nil
+	}
+	decrypted := miner.encSource.DecryptForBlock(env.header, env.state)
+	if len(decrypted) == 0 {
+		return nil
+	}
+	byAddr := make(map[common.Address][]*txpool.LazyTransaction)
+	for _, tx := range decrypted {
+		from, err := types.Sender(env.signer, tx)
+		if err != nil {
+			continue
+		}
+		byAddr[from] = append(byAddr[from], &txpool.LazyTransaction{
+			Tx:        tx,
+			Hash:      tx.Hash(),
+			Time:      time.Now(),
+			GasFeeCap: uint256.MustFromBig(tx.GasFeeCap()),
+			GasTipCap: uint256.MustFromBig(tx.GasTipCap()),
+			Gas:       tx.Gas(),
+			BlobGas:   tx.BlobGas(),
+		})
+	}
+	// Per-account ordering must be ascending by nonce for the price-and-nonce set.
+	for _, txs := range byAddr {
+		sort.SliceStable(txs, func(i, j int) bool { return txs[i].Tx.Nonce() < txs[j].Tx.Nonce() })
+	}
+	if len(byAddr) == 0 {
+		return nil
+	}
+	plainTxs := txorder.NewTransactionsByPriceAndNonce(env.signer, byAddr, env.header.BaseFee)
+	blobTxs := txorder.NewTransactionsByPriceAndNonce(env.signer, nil, env.header.BaseFee)
+	return miner.commitTransactions(ctx, env, plainTxs, blobTxs, interrupt)
 }
 
 // totalFees computes total consumed miner fees in Wei. Block transactions and receipts have to have the same order.

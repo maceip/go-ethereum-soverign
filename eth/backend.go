@@ -20,6 +20,7 @@ package eth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -34,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
+	encbuf "github.com/ethereum/go-ethereum/core/privacy/encmempool"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -456,6 +458,27 @@ func (s *Ethereum) ResetWithGenesisBlock(gb *types.Block) {
 }
 
 func (s *Ethereum) Miner() *miner.Miner { return s.miner }
+
+// EnableEncryptedInclusion makes this node a block producer that decrypts and
+// includes encrypted-mempool transactions, reading the committee from the on-chain
+// keyper registry at registryAddr and obtaining decryption shares from provider.
+//
+// In production, provider must be backed by the keyper network (which releases
+// shares from independent keyper processes). encmempool.NewLocalShareProvider is a
+// DEVNET-ONLY provider that holds committee shares in one process and therefore
+// provides no threshold trust — use it only on single-operator devnets.
+func (s *Ethereum) EnableEncryptedInclusion(registryAddr common.Address, provider encbuf.ShareProvider) error {
+	if s.handler.encPool == nil {
+		return errors.New("encrypted mempool is not active (requires the privacy network profile)")
+	}
+	if provider == nil {
+		return errors.New("nil encrypted-mempool share provider")
+	}
+	src := newEncryptedTxSource(s.handler.encPool, registryAddr, provider, s.blockchain.Config())
+	s.miner.SetEncryptedTxSource(src)
+	log.Info("Encrypted-mempool block inclusion enabled", "registry", registryAddr)
+	return nil
+}
 
 func (s *Ethereum) AccountManager() *accounts.Manager  { return s.accountManager }
 func (s *Ethereum) BlockChain() *core.BlockChain       { return s.blockchain }

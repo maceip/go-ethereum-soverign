@@ -238,17 +238,27 @@ that are never selected stay encrypted.
 - On-chain keyper registry — [`core/privacy/keyper`](core/privacy/keyper): the
   consensus-readable committee/threshold/eon-key record, with a Solidity-compatible
   storage layout and a genesis populator.
+- Decrypt-at-inclusion in block building — [`core/privacy/encmempool/decrypt.go`](core/privacy/encmempool/decrypt.go),
+  [`eth/encrypted_inclusion.go`](eth/encrypted_inclusion.go), and the miner hook in
+  [`miner/worker.go`](miner/worker.go): at block build, the proposer decrypts
+  pending envelopes for which a committee threshold of shares is available, recovers
+  the inner transactions, and commits them **directly into the block** (never the
+  public pool, so contents are not revealed before inclusion). Already-included
+  envelopes (nonce consumed) are dropped; undecryptable envelopes are skipped
+  (committee-unavailable fallback); the path is gated behind the Privacy1 fork. A
+  miner test confirms a decrypted transaction lands in the built block and not in
+  the pool. Activated per node via `Ethereum.EnableEncryptedInclusion(registry,
+  shareProvider)`.
 
 **Not yet implemented (why the sprint is incomplete):**
 
 - Keyper-network transport: the standalone service that carries DKG and per-epoch
   decryption shares between keyper processes, watches the chain trigger, and posts
-  the eon key to the registry. It is built on the tested per-party DKG/threshold
-  APIs but lives outside this repo.
-- Decrypt-at-inclusion in block building: applying released shares to decrypt
-  scheduled envelopes, executing the inner transactions, inclusion/ordering rules,
-  committee-unavailable fallback, and decryption-share accountability logging.
-  This is the consensus-adjacent piece and is gated behind the Privacy1 fork.
+  the eon key to the registry. The in-process DKG/threshold/share-provider APIs it
+  needs are implemented and tested; the production share provider is backed by this
+  network. It lives outside this repo, and until it (or a devnet committee via
+  `encmempool.NewLocalShareProvider`) supplies shares, decrypt-at-inclusion stays
+  dormant — so no encrypted transaction is executed yet.
 
 There is no user-facing submit RPC for encrypted transactions yet, so the
 partially-built path does not present a privacy guarantee the client cannot keep.

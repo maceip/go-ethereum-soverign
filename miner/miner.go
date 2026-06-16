@@ -64,6 +64,17 @@ var DefaultConfig = Config{
 	Recommit: 2 * time.Second,
 }
 
+// EncryptedTxSource decrypts encrypted-mempool envelopes for inclusion in the
+// block currently being built. Implementations recover the inner transactions from
+// threshold-encrypted envelopes using committee decryption shares, and return only
+// transactions that are valid to include against the given state. The returned
+// transactions are committed directly into the block and are never added to the
+// public transaction pool, so their contents are not revealed before inclusion.
+// A nil return (or a nil source) leaves block building unchanged.
+type EncryptedTxSource interface {
+	DecryptForBlock(header *types.Header, state *state.StateDB) []*types.Transaction
+}
+
 // Miner is the main object which takes care of submitting new work to consensus
 // engine and gathering the sealing result.
 type Miner struct {
@@ -76,6 +87,15 @@ type Miner struct {
 	chain       *core.BlockChain
 	pending     *pending
 	pendingMu   sync.Mutex // Lock protects the pending block
+
+	encSource EncryptedTxSource // optional; decrypts encrypted-mempool txs at block build
+}
+
+// SetEncryptedTxSource installs the encrypted-mempool decryption source used to
+// include decrypted transactions directly into built blocks. It is set once during
+// node startup when the node participates in encrypted-mempool inclusion.
+func (miner *Miner) SetEncryptedTxSource(src EncryptedTxSource) {
+	miner.encSource = src
 }
 
 // New creates a new miner with provided config.
