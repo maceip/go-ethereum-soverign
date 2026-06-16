@@ -259,18 +259,28 @@ that are never selected stay encrypted.
   including tolerance of down keypers and rejection of forged shares; and proven to
   drive the eth inclusion source so a transaction encrypted to the committee is
   decrypted for inclusion via the keyper network.
+- Keyper daemon — [`cmd/keyper`](cmd/keyper): `bootstrap` runs the DKG and writes
+  one secret key file per keyper plus a `committee.json` (eon key + registry storage
+  for genesis); `serve` loads a key file and serves decryption shares over HTTP with
+  two release controls — a shared-secret auth token (only proposers presenting it
+  are served) and an enable trigger (the operator can pause release). These controls
+  stop arbitrary parties from decrypting the encrypted mempool. Key files are
+  written 0600; tested for round-trip and committee export.
+- Submit RPC — [`eth/encmempool_api.go`](eth/encmempool_api.go): `privacy_sendEncryptedTransaction`
+  accepts a client-encrypted ciphertext envelope, validates it, and buffers+gossips
+  it (the node never sees plaintext); `privacy_committee` reports the eon key,
+  threshold, and keypers from the on-chain registry so wallets can encrypt.
 
-**Operational hardening still required before production:**
+**Remaining cryptographic hardening (documented, not faked):**
 
-- A standalone keyper daemon with secure key-share storage/persistence and
-  independent enforcement of the per-epoch decryption trigger (a keyper should
-  refuse to release shares before a transaction is due). The in-repo library serves
-  shares on request, which is correct for a single-operator devnet but assumes the
-  requester (proposer) only asks at the trigger; production keypers must enforce
-  this themselves and run as separate, mutually-distrusting processes.
-- A user-facing submit path / RPC for encrypted transactions. Until one exists, the
-  encrypted-mempool path presents no privacy guarantee to end users that the client
-  cannot keep.
+- Per-epoch decryption keying (Boneh-Franklin-style threshold IBE). In the current
+  threshold-ElGamal scheme a decryption share does not bind to an epoch, so a keyper
+  cannot cryptographically prevent a requester from decrypting a not-yet-due
+  transaction — early decryption is prevented only by the keyper's auth/trigger
+  controls, which are operational, not cryptographic. Binding encryption to a
+  per-epoch committee key (so a ciphertext is undecryptable until the keypers
+  release that epoch's key) is the stronger design and the recommended next crypto
+  upgrade; the bn256 pairing already in use supports it.
 
 Batched threshold encryption (USENIX Security 2024/2025) and BEAT-MEV are the
 research directions to track for efficiency; the current interfaces do not preclude

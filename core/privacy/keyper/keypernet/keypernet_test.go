@@ -91,7 +91,7 @@ func TestHTTPNetworkEndToEnd(t *testing.T) {
 		defer srv.Close()
 		endpoints[i] = KeyperEndpoint{URL: srv.URL, VK: k.VerificationKey()}
 	}
-	provider := NewProvider(NewHTTPTransport(endpoints, 2*time.Second))
+	provider := NewProvider(NewHTTPTransport(endpoints, 2*time.Second, ""))
 
 	msg := []byte("recovered over HTTP from the keyper network")
 	if got := roundTrip(t, eon, provider, tt, msg); !bytes.Equal(got, msg) {
@@ -121,7 +121,7 @@ func TestHTTPNetworkToleratesDownKeypers(t *testing.T) {
 			endpoints = append(endpoints, KeyperEndpoint{URL: "http://127.0.0.1:1", VK: k.VerificationKey()})
 		}
 	}
-	provider := NewProvider(NewHTTPTransport(endpoints, 500*time.Millisecond))
+	provider := NewProvider(NewHTTPTransport(endpoints, 500*time.Millisecond, ""))
 
 	msg := []byte("threshold met despite down keypers")
 	if got := roundTrip(t, eon, provider, tt, msg); !bytes.Equal(got, msg) {
@@ -161,7 +161,7 @@ func TestRejectsForgedShare(t *testing.T) {
 		{URL: forged.URL, VK: keypers[1].VerificationKey()}, // forged shares fail this VK
 		{URL: honest2.URL, VK: keypers[2].VerificationKey()},
 	}
-	provider := NewProvider(NewHTTPTransport(endpoints, time.Second))
+	provider := NewProvider(NewHTTPTransport(endpoints, time.Second, ""))
 
 	// Honest keypers 0 and 2 meet the threshold of 2; the forged share is excluded.
 	msg := []byte("forged share excluded, honest threshold still met")
@@ -172,9 +172,59 @@ func TestRejectsForgedShare(t *testing.T) {
 	// A transport over only the forged endpoint must yield no usable share.
 	forgedOnly := NewProvider(NewHTTPTransport([]KeyperEndpoint{
 		{URL: forged.URL, VK: keypers[1].VerificationKey()},
-	}, time.Second))
+	}, time.Second, ""))
 	ct, _ := threshold.Encrypt(eon, msg, rand.Reader)
 	if shares := forgedOnly.Shares(ct, 1); shares != nil {
 		t.Fatal("forged share passed verification")
+	}
+}
+
+// TestServerAuthAndTrigger checks the keyper Server enforces the authorization
+// token and the enable trigger, so shares are not released to arbitrary parties or
+// before the keyper is enabled.
+func TestServerAuthAndTrigger(t *testing.T) {
+	const tt, n = 2, 3
+	keypers, eon, _, err := Bootstrap(tt, n, rand.Reader)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	const token = "s3cr3t-proposer-token"
+
+	servers := make([]*Server, n)
+	endpoints := make([]KeyperEndpoint, n)
+	for i, k := range keypers {
+		servers[i] = NewServer(k, token)
+		srv := httptest.NewServer(servers[i].Handler())
+		defer srv.Close()
+		endpoints[i] = KeyperEndpoint{URL: srv.URL, VK: k.VerificationKey()}
+	}
+
+	ct, _ := threshold.Encrypt(eon, []byte("trigger me"), rand.Reader)
+
+	// Disabled keypers (trigger off): no shares even with the right token.
+	authed := NewProvider(NewHTTPTransport(endpoints, time.Second, token))
+	if shares := authed.Shares(ct, tt); shares != nil {
+		t.Fatal("disabled keypers released shares")
+	}
+
+	// Enable release.
+	for _, s := range servers {
+		s.SetEnabled(true)
+	}
+
+	// Wrong/empty token: rejected even though enabled.
+	noAuth := NewProvider(NewHTTPTransport(endpoints, time.Second, "wrong-token"))
+	if shares := noAuth.Shares(ct, tt); shares != nil {
+		t.Fatal("keypers released shares to an unauthorized requester")
+	}
+
+	// Correct token and enabled: shares released.
+	got := authed.Shares(ct, tt)
+	if len(got) < tt {
+		t.Fatalf("authorized+enabled request got %d shares, want >= %d", len(got), tt)
+	}
+	plain, err := threshold.Combine(tt, ct, got)
+	if err != nil || string(plain) != "trigger me" {
+		t.Fatalf("combine after authorized release failed: %v", err)
 	}
 }

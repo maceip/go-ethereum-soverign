@@ -18,9 +18,11 @@ package keypernet
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/privacy/threshold"
@@ -31,16 +33,72 @@ import (
 // marshalled threshold.DecryptionShare.
 const SharePath = "/keyper/decryption-share"
 
+// AuthHeader is the HTTP header carrying the shared-secret authorization token a
+// requester must present to a keyper.
+const AuthHeader = "X-Keyper-Auth"
+
 // maxShareRequestSize bounds an inbound ciphertext request.
 const maxShareRequestSize = 1 << 20
 
-// ServeMux returns an http.Handler that serves the keyper's decryption shares.
-// A keyper process mounts this on its HTTP server.
-func (k *Keyper) ServeMux() http.Handler {
+// Server exposes a keyper's decryption-share endpoint over HTTP with two release
+// controls that together stop arbitrary parties from decrypting the encrypted
+// mempool at will:
+//
+//   - authorization: a requester must present the shared-secret token (so only the
+//     block proposers the keyper serves can request shares); and
+//   - a trigger: the operator must enable release, and can pause it, so a keyper
+//     does not serve shares outside legitimate block production.
+//
+// These are operational controls appropriate to this fork's threshold-ElGamal
+// scheme, in which a decryption share does not by itself bind to an epoch. Binding
+// decryption to a per-epoch key so that ciphertexts are cryptographically
+// undecryptable before their epoch (Boneh-Franklin-style threshold IBE) is the
+// stronger design and is tracked as a follow-up; until then these controls are what
+// prevent out-of-band decryption.
+type Server struct {
+	keyper    *Keyper
+	authToken string
+	enabled   atomic.Bool
+}
+
+// NewServer wraps a keyper for HTTP serving. authToken is the shared secret a
+// requester must present; an empty token disables the auth check (devnet only).
+// The server starts disabled; call SetEnabled(true) once the keyper is ready to
+// release shares.
+func NewServer(k *Keyper, authToken string) *Server {
+	return &Server{keyper: k, authToken: authToken}
+}
+
+// SetEnabled turns share release on or off (the operator trigger).
+func (s *Server) SetEnabled(enabled bool) { s.enabled.Store(enabled) }
+
+// Enabled reports whether the server is currently releasing shares.
+func (s *Server) Enabled() bool { return s.enabled.Load() }
+
+// authorized reports whether the request carries the required auth token.
+func (s *Server) authorized(r *http.Request) bool {
+	if s.authToken == "" {
+		return true
+	}
+	got := r.Header.Get(AuthHeader)
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) == 1
+}
+
+// Handler returns the http.Handler serving the keyper's shares, subject to the
+// authorization and trigger controls.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(SharePath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		if !s.authorized(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !s.enabled.Load() {
+			http.Error(w, "share release disabled", http.StatusServiceUnavailable)
 			return
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxShareRequestSize))
@@ -53,7 +111,7 @@ func (k *Keyper) ServeMux() http.Handler {
 			http.Error(w, "bad ciphertext", http.StatusBadRequest)
 			return
 		}
-		share, err := k.DecryptionShare(ct).Marshal()
+		share, err := s.keyper.DecryptionShare(ct).Marshal()
 		if err != nil {
 			http.Error(w, "share error", http.StatusInternalServerError)
 			return
@@ -62,6 +120,15 @@ func (k *Keyper) ServeMux() http.Handler {
 		w.Write(share)
 	})
 	return mux
+}
+
+// ServeMux returns an open, always-enabled handler for the keyper's shares. It is a
+// convenience for tests and single-operator devnets; production keypers use Server
+// for authorization and trigger control.
+func (k *Keyper) ServeMux() http.Handler {
+	s := NewServer(k, "")
+	s.SetEnabled(true)
+	return s.Handler()
 }
 
 // KeyperEndpoint is a networked keyper: its share-serving base URL and its public
@@ -77,10 +144,12 @@ type HTTPTransport struct {
 	endpoints []KeyperEndpoint
 	client    *http.Client
 	vks       map[uint32]*threshold.VerificationKey
+	authToken string
 }
 
-// NewHTTPTransport builds a transport over the given keyper endpoints.
-func NewHTTPTransport(endpoints []KeyperEndpoint, timeout time.Duration) *HTTPTransport {
+// NewHTTPTransport builds a transport over the given keyper endpoints. authToken is
+// the shared secret presented to each keyper (empty for open devnet keypers).
+func NewHTTPTransport(endpoints []KeyperEndpoint, timeout time.Duration, authToken string) *HTTPTransport {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
@@ -94,6 +163,7 @@ func NewHTTPTransport(endpoints []KeyperEndpoint, timeout time.Duration) *HTTPTr
 		endpoints: endpoints,
 		client:    &http.Client{Timeout: timeout},
 		vks:       vks,
+		authToken: authToken,
 	}
 }
 
@@ -120,7 +190,15 @@ func (t *HTTPTransport) Collect(ct *threshold.Ciphertext, need int) ([]*threshol
 }
 
 func (t *HTTPTransport) fetch(baseURL string, body []byte) (*threshold.DecryptionShare, error) {
-	resp, err := t.client.Post(baseURL+SharePath, "application/octet-stream", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+SharePath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if t.authToken != "" {
+		req.Header.Set(AuthHeader, t.authToken)
+	}
+	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, err
 	}

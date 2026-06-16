@@ -182,6 +182,11 @@ type Config struct {
 	// diagnostics only.
 	Dandelion dandelion.Config
 
+	// EncryptedMempoolRegistry is the account address of the on-chain keyper
+	// registry for the encrypted mempool. When set, the privacy RPC can report the
+	// committee (eon) key so wallets can encrypt to it. Zero means unconfigured.
+	EncryptedMempoolRegistry common.Address `toml:",omitempty"`
+
 	// Gas Price Oracle options
 	GPO gasprice.Config
 

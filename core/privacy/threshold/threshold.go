@@ -391,6 +391,29 @@ func UnmarshalDecryptionShare(b []byte) (*DecryptionShare, error) {
 	return &DecryptionShare{Index: idx, D: d}, nil
 }
 
+// Marshal serializes a key share as index(4) || secret(32). The secret is
+// sensitive key material: callers must protect the output (it is a committee
+// member's private share).
+func (ks *KeyShare) Marshal() ([]byte, error) {
+	if ks == nil || ks.Secret == nil {
+		return nil, errMalformed
+	}
+	out := make([]byte, 4+32)
+	binary.BigEndian.PutUint32(out[:4], ks.Index)
+	ks.Secret.FillBytes(out[4:])
+	return out, nil
+}
+
+// UnmarshalKeyShare parses the encoding produced by KeyShare.Marshal.
+func UnmarshalKeyShare(b []byte) (*KeyShare, error) {
+	if len(b) != 4+32 {
+		return nil, errMalformed
+	}
+	idx := binary.BigEndian.Uint32(b[:4])
+	secret := new(big.Int).SetBytes(b[4:])
+	return &KeyShare{Index: idx, Secret: secret}, nil
+}
+
 // Marshal serializes a verification key as index(4) || G2.
 func (v *VerificationKey) Marshal() ([]byte, error) {
 	if v == nil || v.Point == nil {

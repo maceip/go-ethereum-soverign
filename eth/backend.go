@@ -449,6 +449,10 @@ func (s *Ethereum) APIs() []rpc.API {
 			// building, and stateless stealth-address / commitment helpers.
 			Namespace: "privacy",
 			Service:   NewPrivacyAPI(ethPrivacyBackend{s}),
+		}, {
+			// Encrypted-mempool submit path and committee discovery.
+			Namespace: "privacy",
+			Service:   NewEncMempoolAPI(s),
 		},
 	}...)
 }
