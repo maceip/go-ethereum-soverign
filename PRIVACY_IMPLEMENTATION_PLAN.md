@@ -249,19 +249,29 @@ that are never selected stay encrypted.
   miner test confirms a decrypted transaction lands in the built block and not in
   the pool. Activated per node via `Ethereum.EnableEncryptedInclusion(registry,
   shareProvider)`.
+- Keyper network — [`core/privacy/keyper/keypernet`](core/privacy/keyper/keypernet),
+  vendored in-repo: a `Keyper` holds one DKG share and serves verifiable decryption
+  shares; a `Transport` collects a threshold of verified shares for a ciphertext
+  (an in-process transport for tests/single-operator devnets and an HTTP transport
+  for independently-run keyper processes); and a `Provider` adapts the transport to
+  the block builder's `ShareProvider`. `Bootstrap` runs the DKG and yields the
+  committee. Tested end to end (encrypt → collect shares over the network → combine),
+  including tolerance of down keypers and rejection of forged shares; and proven to
+  drive the eth inclusion source so a transaction encrypted to the committee is
+  decrypted for inclusion via the keyper network.
 
-**Not yet implemented (why the sprint is incomplete):**
+**Operational hardening still required before production:**
 
-- Keyper-network transport: the standalone service that carries DKG and per-epoch
-  decryption shares between keyper processes, watches the chain trigger, and posts
-  the eon key to the registry. The in-process DKG/threshold/share-provider APIs it
-  needs are implemented and tested; the production share provider is backed by this
-  network. It lives outside this repo, and until it (or a devnet committee via
-  `encmempool.NewLocalShareProvider`) supplies shares, decrypt-at-inclusion stays
-  dormant — so no encrypted transaction is executed yet.
+- A standalone keyper daemon with secure key-share storage/persistence and
+  independent enforcement of the per-epoch decryption trigger (a keyper should
+  refuse to release shares before a transaction is due). The in-repo library serves
+  shares on request, which is correct for a single-operator devnet but assumes the
+  requester (proposer) only asks at the trigger; production keypers must enforce
+  this themselves and run as separate, mutually-distrusting processes.
+- A user-facing submit path / RPC for encrypted transactions. Until one exists, the
+  encrypted-mempool path presents no privacy guarantee to end users that the client
+  cannot keep.
 
-There is no user-facing submit RPC for encrypted transactions yet, so the
-partially-built path does not present a privacy guarantee the client cannot keep.
 Batched threshold encryption (USENIX Security 2024/2025) and BEAT-MEV are the
 research directions to track for efficiency; the current interfaces do not preclude
 moving to a batched scheme. Fair-ordering/PBS hooks are roadmap context (source

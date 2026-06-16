@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	encbuf "github.com/ethereum/go-ethereum/core/privacy/encmempool"
 	"github.com/ethereum/go-ethereum/core/privacy/keyper"
+	"github.com/ethereum/go-ethereum/core/privacy/keyper/keypernet"
 	"github.com/ethereum/go-ethereum/core/privacy/threshold"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -135,6 +136,45 @@ func TestEncryptedInclusionDecryptsForBlock(t *testing.T) {
 	// The stale (already-included) envelope must have been dropped from the pool.
 	if pool.Has(staleEnv.ID()) {
 		t.Fatal("stale envelope was not dropped after inclusion")
+	}
+}
+
+// TestEncryptedInclusionViaKeyperNetwork proves the full chain: a transaction
+// encrypted to a DKG-generated committee is decrypted for block inclusion using
+// decryption shares collected from the (in-process) keyper network, with the
+// committee threshold read from the on-chain registry.
+func TestEncryptedInclusionViaKeyperNetwork(t *testing.T) {
+	const tt, n = 3, 5
+	cfg := privacyChainConfig()
+	signer := types.LatestSigner(cfg)
+
+	// Stand up a keyper committee via DKG and install it in the registry.
+	keypers, eon, _, err := keypernet.Bootstrap(tt, n, rand.Reader)
+	if err != nil {
+		t.Fatalf("keyper bootstrap: %v", err)
+	}
+	storage, err := keyper.BuildRegistryStorage(tt, eon, []common.Address{{1}, {2}, {3}, {4}, {5}})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+
+	key, _ := crypto.GenerateKey()
+	from := crypto.PubkeyToAddress(key.PublicKey)
+	tx := types.MustSignNewTx(key, signer, &types.DynamicFeeTx{
+		ChainID: cfg.ChainID, Nonce: 0, GasTipCap: big.NewInt(1), GasFeeCap: big.NewInt(1),
+		Gas: 21000, To: &common.Address{0xaa}, Value: big.NewInt(7),
+	})
+	pool := encbuf.NewPool(16)
+	pool.Add(encEnvelopeFor(t, eon, tx))
+
+	// Decryption shares come from the keyper network, not a local key.
+	provider := keypernet.NewProvider(keypernet.NewInmemTransport(keypers))
+	src := newEncryptedTxSource(pool, encRegistryAddr, provider, cfg)
+
+	st := &mockAcctState{regAddr: encRegistryAddr, storage: storage, nonces: map[common.Address]uint64{from: 0}}
+	got := src.decrypt(&types.Header{Number: big.NewInt(1), Time: 1}, st)
+	if len(got) != 1 || got[0].Hash() != tx.Hash() {
+		t.Fatalf("keyper-network decryption did not recover the transaction for inclusion")
 	}
 }
 

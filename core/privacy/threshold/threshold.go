@@ -56,6 +56,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -365,4 +366,50 @@ func UnmarshalPublicKey(b []byte) (*PublicKey, error) {
 		return nil, fmt.Errorf("%w: %v", errBadParams, err)
 	}
 	return &PublicKey{P: p}, nil
+}
+
+// Marshal serializes a decryption share as index(4) || G1(64).
+func (s *DecryptionShare) Marshal() ([]byte, error) {
+	if s == nil || s.D == nil {
+		return nil, errMalformed
+	}
+	out := make([]byte, 4, 4+64)
+	binary.BigEndian.PutUint32(out, s.Index)
+	return append(out, s.D.Marshal()...), nil
+}
+
+// UnmarshalDecryptionShare parses the encoding produced by DecryptionShare.Marshal.
+func UnmarshalDecryptionShare(b []byte) (*DecryptionShare, error) {
+	if len(b) < 4 {
+		return nil, errMalformed
+	}
+	idx := binary.BigEndian.Uint32(b[:4])
+	d := new(bn256.G1)
+	if _, err := d.Unmarshal(b[4:]); err != nil {
+		return nil, fmt.Errorf("%w: %v", errMalformed, err)
+	}
+	return &DecryptionShare{Index: idx, D: d}, nil
+}
+
+// Marshal serializes a verification key as index(4) || G2.
+func (v *VerificationKey) Marshal() ([]byte, error) {
+	if v == nil || v.Point == nil {
+		return nil, errMalformed
+	}
+	out := make([]byte, 4)
+	binary.BigEndian.PutUint32(out, v.Index)
+	return append(out, v.Point.Marshal()...), nil
+}
+
+// UnmarshalVerificationKey parses the encoding produced by VerificationKey.Marshal.
+func UnmarshalVerificationKey(b []byte) (*VerificationKey, error) {
+	if len(b) < 4 {
+		return nil, errMalformed
+	}
+	idx := binary.BigEndian.Uint32(b[:4])
+	p := new(bn256.G2)
+	if _, err := p.Unmarshal(b[4:]); err != nil {
+		return nil, fmt.Errorf("%w: %v", errMalformed, err)
+	}
+	return &VerificationKey{Index: idx, Point: p}, nil
 }
