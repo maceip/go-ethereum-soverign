@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/history"
+	"github.com/ethereum/go-ethereum/core/privacy/keyper/keypernet"
 	"github.com/ethereum/go-ethereum/core/txpool/blobpool"
 	"github.com/ethereum/go-ethereum/core/txpool/legacypool"
 	"github.com/ethereum/go-ethereum/eth/gasprice"
@@ -186,6 +187,12 @@ type Config struct {
 	// registry for the encrypted mempool. When set, the privacy RPC can report the
 	// committee (eon) key so wallets can encrypt to it. Zero means unconfigured.
 	EncryptedMempoolRegistry common.Address `toml:",omitempty"`
+
+	// DevPrivacyKeypers holds the encrypted-mempool committee key shares this node
+	// self-hosts in developer privacy mode (a single-operator devnet committee, with
+	// no threshold trust). It is never serialized and is unset on real networks,
+	// where decryption keys come from an external keyper network instead.
+	DevPrivacyKeypers []*keypernet.Keyper `toml:"-"`
 
 	// Gas Price Oracle options
 	GPO gasprice.Config

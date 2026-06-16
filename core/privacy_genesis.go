@@ -34,6 +34,12 @@ import (
 // public seed (see circuit.DevnetSetup). It must only be used for development
 // networks; on such a network shielded value can be forged. Do not call this for a
 // value-bearing chain.
+//
+// DevnetKeyperRegistry is the reserved account address at which developer privacy
+// mode installs the encrypted-mempool keyper committee registry, so a dev node can
+// read the committee from state and serve it to wallets.
+var DevnetKeyperRegistry = common.HexToAddress("0x00000000000000000000000000000000000a11ce")
+
 func EnablePrivacyDevnet(gspec *Genesis) error {
 	vk, err := circuit.DevnetVerifyingKey()
 	if err != nil {

@@ -227,12 +227,13 @@ func newHandler(config *handlerConfig) (*handler, error) {
 	}
 
 	// Enable the encrypted-mempool propagation layer if requested. This buffers and
-	// gossips opaque threshold-encrypted envelopes; committee decryption and block
-	// inclusion are a later stage, so no plaintext is handled here.
+	// gossips opaque threshold-encrypted envelopes; no plaintext is handled here.
+	// Committee decryption at block inclusion is wired separately by the block
+	// builder when a keyper share provider is available.
 	if config.EncryptedMempool {
 		h.encPool = encbuf.NewPool(encPoolMax)
 		h.encPeers = make(map[enode.ID]*encproto.Peer)
-		log.Info("Encrypted-mempool propagation enabled (ciphertext gossip; committee decryption and inclusion are a later stage)")
+		log.Info("Encrypted-mempool propagation enabled (opaque ciphertext gossip)")
 	}
 	return h, nil
 }

@@ -1,36 +1,33 @@
-# Sovereign Privacy: Three-Phase Implementation Plan
+# Sovereign Privacy: Client Implementation Status
 
-This document maps the five-phase research roadmap *"Ethereum Privacy: The Road to
-Self-Sovereignty"* onto **three concrete, buildable engineering phases** for this
-go-ethereum client. It builds directly on the foundation already merged to `master`
-(see [`PRIVACY_ROADMAP.md`](PRIVACY_ROADMAP.md)): Pedersen commitments, EIP-5564
-stealth addresses, the shielded-pool primitives, and the
-`PEDERSEN_COMMIT`/`PEDERSEN_ADD` precompiles.
+This document describes the status of the one privacy client target defined by
+[`shape.md`](shape.md), which is the canonical alignment document. There are no
+phases, stages, slices, or separate delivery tracks: the required privacy
+guarantees are either wired into the real client paths (working out of the box on
+the privacy network profile and covered by tests) or described plainly as
+incomplete. The roadmap *"Ethereum Privacy: The Road to Self-Sovereignty"* is the
+source of scope; its phase labels are source-context only.
 
-[`shape.md`](shape.md) is the canonical alignment document. In particular,
-Dandelion++ network-origin privacy is a **Phase 1 core requirement** under the
-source roadmap, not Phase 2 work.
+The client target comprises the required privacy guarantees:
 
-Each engineering phase is independently shippable, gated behind a hard fork so
-mainnet semantics never change until activation, and ends with a clear,
-testable exit criterion.
+- **Confidential ETH** — consensus-level shielded transfers (built on the merged
+  Pedersen commitments, EIP-5564 stealth addresses, shielded-pool primitives, and
+  privacy precompiles).
+- **Network-origin privacy** — Dandelion++, wired into live transaction propagation.
+- **Opinionated privacy defaults** — privacy active by default on the privacy
+  network profile, not behind user opt-in flags.
+- **Encrypted mempool** — threshold/IBE-based, with a keyper committee and
+  decrypt-at-inclusion through the real block path.
 
-## Mapping: roadmap phases → engineering phases
-
-| Engineering phase | Pulls from roadmap | Theme |
-| --- | --- | --- |
-| **Phase 1 — Confidential ETH + network-origin privacy** | Roadmap Ph.1 §1–§4, Ph.3 §3, Ph.4 §1 | Make ETH private end-to-end enough for Phase 1: shielded transfer plus Dandelion++ origin protection. |
-| **Phase 2 — Encrypted mempool & fair ordering** | Roadmap Ph.1 §2, Ph.4 §3 | Protect transaction contents and ordering before inclusion: encrypted mempool and fair ordering. |
-| **Phase 3 — Private tokens, contracts & PQ** | Roadmap Ph.2, Ph.3 §1–§2, Ph.5 | Generalise privacy to tokens and computation, then quantum-harden. |
-
-**Recommended ordering: 1 → 2 → 3.** The roadmap itself states Phase 1 is
-foundational ("if ETH remains public, private ERC-20/721 transactions still reveal
-links"). Phase 2 is independent of Phase 1 and can run in parallel if staffing
-allows. Phase 3 depends on both.
+All consensus-affecting behavior is gated behind the Privacy1 fork so mainnet
+semantics never change until activation. Generalising privacy to tokens, arbitrary
+computation, and post-quantum cryptography is **future roadmap beyond this client
+target**, recorded at the end of this document as context, not as deferred work of
+the current client.
 
 ---
 
-## Phase 1 — Confidential ETH transactions (consensus-level)
+## Confidential ETH transactions (consensus-level)
 
 **Goal.** Users can shield native ETH into a protocol-managed pool, transfer it
 confidentially (hidden sender, recipient, amount), and unshield back — verified by
@@ -117,8 +114,8 @@ a full sync of a third node. Unit + state tests green; `go test ./core/...`.
   per-circuit ceremony, so new privacy circuits can ship without a new ceremony.
   gnark provides a production Go implementation (Halo2 is Rust-only, which would
   force an FFI/sidecar boundary). Migration to a transparent STARK verifier is
-  deferred to Phase 3 (post-quantum).
-- **Pool model**: single ETH pool vs multi-asset (defer multi-asset to Phase 3).
+  deferred to future roadmap (post-quantum).
+- **Pool model**: single ETH pool vs multi-asset (defer multi-asset to future roadmap).
 
 ### Status
 
@@ -136,7 +133,7 @@ a full sync of a third node. Unit + state tests green; `go test ./core/...`.
 
 ### Devnet operation
 
-`geth --dev --dev.privacy` brings up a developer chain with Privacy Phase 1 active
+`geth --dev --dev.privacy` brings up a developer chain with Privacy1 active
 from genesis and the shielded-transfer verifying key installed in the pool's
 genesis state. Wallets/tooling use:
 
@@ -208,7 +205,7 @@ proof does not validate a transaction whose public fields were altered.
 
 ## Encrypted mempool (part of the atomic privacy sprint)
 
-Per `shape.md`, this fork is one atomic sprint with no internal phases. The
+Per `shape.md`, this is one client target with no internal phases. The
 encrypted mempool is in scope for the sprint and is **not yet complete**: until it
 decrypts and includes transactions end to end, the sprint as a whole is incomplete,
 and that is stated plainly rather than dressed up as a shipped milestone.
@@ -287,11 +284,11 @@ undecryptable because the epoch key does not exist until the committee releases 
 Batched threshold encryption (USENIX Security 2024/2025) and BEAT-MEV are the
 research directions to track for efficiency (one IBE key release per epoch is
 already efficient; batching would further amortise committee work). Fair-ordering/PBS
-hooks are roadmap context (source phase 4), not part of this sprint.
+hooks are future roadmap context, not part of the current client target.
 
 ---
 
-## Phase 3 — Private tokens, contracts & post-quantum
+## Future roadmap (beyond the client target): private tokens, contracts & post-quantum
 
 **Goal.** Extend confidentiality beyond ETH to tokens and arbitrary computation,
 then migrate cryptography to be quantum-resistant.
@@ -299,7 +296,7 @@ then migrate cryptography to be quantum-resistant.
 ### Workstreams
 
 1. **Confidential ERC-20 / ERC-721 (Roadmap Ph.2).**
-   - Generalise the Phase 1 shielded pool to multi-asset notes (asset id inside the
+   - Generalise the shielded pool to multi-asset notes (asset id inside the
      commitment). Reference contracts + an EIP draft for the standard.
    - Reuse nullifiers/commitments; add shielded NFT ownership notes.
 
@@ -314,7 +311,7 @@ then migrate cryptography to be quantum-resistant.
    - Add lattice/hash-based signature verification (CRYSTALS-Dilithium, SPHINCS+)
      selectable via account abstraction, allowing legacy + PQ accounts to coexist.
    - Migrate the proof system from pairing-based SNARKs to **zk-STARKs**
-     (transparent, no trusted setup, PQ-friendly). Swap the Phase 1 PlonK verifier
+     (transparent, no trusted setup, PQ-friendly). Swap the PlonK verifier
      for a STARK verifier behind a new fork.
    - PQ signature aggregation to manage larger signature sizes.
 
@@ -325,7 +322,7 @@ a STARK-verified shielded transfer validates on a devnet.
 
 ---
 
-## Cross-cutting concerns (all phases)
+## Cross-cutting concerns (client-wide)
 
 - **Fork management.** Each phase = one fork flag in `params.ChainConfig`/`Rules`;
   default-off on mainnet config. Devnet genesis activates them at block/time 0.
@@ -339,12 +336,15 @@ a STARK-verified shielded transfer validates on a devnet.
   and opt-in at the protocol layer until a later governance decision makes it
   default (Roadmap Ph.4).
 
-## Suggested sequencing
+## Engineering order within the client target
+
+Internal build order only — these are one client target, not separate deliverables:
 
 ```
-Phase 1  ──────────────►  (consensus confidential ETH)         ~ largest, gates Ph.3
-   │
-   ├─ Phase 2 can start in parallel (network/mempool, independent of state changes)
-   │
-   └─────────────────────►  Phase 3 (needs Ph.1 pool + Ph.2 ordering)
+confidential ETH (consensus shielded transfers)   — largest consensus surface
+Dandelion++ network-origin privacy                — independent of state changes
+encrypted mempool (threshold/IBE + keyper + inclusion)
 ```
+
+Future roadmap (private tokens, computation, post-quantum) builds on the shielded
+pool and is out of scope for the current client target.

@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
 	encbuf "github.com/ethereum/go-ethereum/core/privacy/encmempool"
+	"github.com/ethereum/go-ethereum/core/privacy/keyper/keypernet"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -384,6 +385,17 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.miner = miner.New(eth, config.Miner, eth.engine)
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
 	eth.miner.SetPrioAddresses(config.TxPool.Locals)
+
+	// On the developer privacy profile the node self-hosts the encrypted-mempool
+	// keyper committee, so enable decrypt-at-inclusion against the in-process
+	// committee. On real networks the share provider comes from an external keyper
+	// network instead; this path is devnet-only and provides no threshold trust.
+	if len(config.DevPrivacyKeypers) > 0 && eth.handler.encPool != nil {
+		provider := keypernet.NewInmemProvider(config.DevPrivacyKeypers, ^uint64(0))
+		if err := eth.EnableEncryptedInclusion(config.EncryptedMempoolRegistry, provider); err != nil {
+			log.Warn("Failed to enable encrypted-mempool inclusion", "err", err)
+		}
+	}
 
 	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, eth, nil}
 	if eth.APIBackend.allowUnprotectedTxs {

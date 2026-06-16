@@ -86,6 +86,18 @@ type Provider struct {
 	vks       map[uint32]*threshold.VerificationKey
 }
 
+// NewInmemProvider builds an epoch-key provider backed by an in-process keyper set
+// (the keypers' own verification keys are used to verify their shares). It is for
+// single-operator devnets and tests, where one process holds the whole committee
+// and therefore provides no threshold trust.
+func NewInmemProvider(keypers []*Keyper, triggerEpoch uint64) *Provider {
+	vks := make([]*threshold.VerificationKey, len(keypers))
+	for i, k := range keypers {
+		vks[i] = k.VerificationKey()
+	}
+	return NewProvider(NewInmemTransport(keypers, triggerEpoch), vks)
+}
+
 // NewProvider builds an epoch-key provider over a transport, verifying shares
 // against the given committee verification keys.
 func NewProvider(transport Transport, vks []*threshold.VerificationKey) *Provider {

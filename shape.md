@@ -2,32 +2,40 @@
 
 This document is the alignment source for this fork. The attached roadmap,
 *"Ethereum Privacy: The Road to Self-Sovereignty"*, is the source of truth for
-scope and phase placement. Existing implementation notes must be read through
-this document when there is any tension.
+scope and required privacy guarantees. Existing implementation notes must be read
+through this document when there is any tension.
 
-## Atomic Sprint
+## Single Client Target
 
-This fork does not have multiple implementation phases. The roadmap's phase
-labels are source-context only: they explain why a requirement belongs in scope,
-not permission to defer it into a later fork milestone.
+This fork is not a staged, phased, demo, beta, preview, or partial-delivery
+effort. It is one client moving toward one production privacy shape. Any
+document, branch, issue, or implementation note that presents the privacy work as
+separate spaces, tracks, slices, fallback paths, or differently branded delivery
+buckets must be corrected or read through this file.
 
-The current privacy overhaul is one atomic sprint. Dandelion++, confidential ETH,
-the opinionated privacy defaults, the required cleanup, and the documented
-research-aligned scope must land together as one coherent production shape or be
-called incomplete. Do not split the work into "Phase 1 now, Phase 2 later" inside
-this fork, and do not merge partial privacy paths that create a user-visible
-guarantee gap.
+The client target includes Dandelion++, confidential ETH, opinionated privacy
+defaults, encrypted-mempool direction, required cleanup, and the documented
+research-aligned scope. These are not separately branded milestones. Work can be
+ordered internally for engineering reasons, but partial paths must be described
+as incomplete implementation work, not as a valid lower-tier client mode.
 
-## Non-Negotiable Phase Alignment
+Do not use labels such as stage, phase, demo, beta, preview, vertical slice,
+later milestone, or optional module to make an incomplete privacy path sound
+acceptable. There is one supported client goal: it works out of the box on the
+supported privacy network profile, with the documented privacy guarantees wired
+into the real client paths and covered by tests.
 
-Dandelion++ is a core Phase 1 requirement. It is not a Phase 2 module, not an
-optional experiment, and not a cleanup item that can be removed without replacing
-the Phase 1 network-origin privacy it was meant to provide.
+Fallback code is allowed only for explicit liveness, compatibility, emergency, or
+recovery handling. It must never be the product path, the testing substitute, or
+the reason a missing privacy implementation is described as working.
 
-The roadmap places network-level anonymity under Phase 1, "Early MEV Protection
-& Network Privacy":
+## Non-Negotiable Client Alignment
 
-- Phase 1 protects native ETH transaction privacy before inclusion, not only
+Dandelion++ is a core requirement of the client. It is not a secondary module,
+not an experiment, and not a cleanup item that can be removed without replacing
+the network-origin privacy it was meant to provide.
+
+- Native ETH transaction privacy must be protected before inclusion, not only
   after execution.
 - Hiding sender, recipient, and amount on-chain is insufficient if peer-to-peer
   propagation still reveals the origin node.
@@ -35,8 +43,8 @@ The roadmap places network-level anonymity under Phase 1, "Early MEV Protection
   transaction origin and reducing timing-based deanonymization.
 
 If Dandelion++ is not wired into the transaction propagation path, the fork must
-state plainly that Phase 1 network-origin privacy is incomplete. It must not be
-described as Phase 2 work.
+state plainly that network-origin privacy is incomplete. It must not be
+reclassified into a separate delivery bucket.
 
 ## Opinionated Privacy Defaults
 
@@ -64,9 +72,9 @@ A Dandelion++ implementation is acceptable only when it is wired into the live
 client path and covered by propagation tests. A standalone router package is not
 enough.
 
-- Locally originated transactions enter stem phase by default when the node has
+- Locally originated transactions enter stem routing by default when the node has
   an eligible stem peer.
-- The implementation preserves phase semantics for local, stem-relayed, and
+- The implementation preserves Dandelion routing semantics for local, stem-relayed, and
   fluff/diffusion transactions.
 - Normal Ethereum gossip remains the safety fallback when Dandelion routing
   cannot safely proceed.
@@ -100,7 +108,7 @@ one helper.
 - Txpool event surface:
   `core.NewTxsEvent` or the surrounding txpool event plumbing must carry enough
   locality metadata for the handler to know whether a transaction should start in
-  stem phase.
+  stem routing.
 - Peer selection:
   the router must track eligible peers, update on connect/disconnect, select a
   per-epoch successor, and fall back to diffusion when no safe successor exists.
@@ -131,7 +139,7 @@ one helper.
 ## 2024-2026 Research Updates To Fold In
 
 The recent privacy literature changes the implementation shape. The most useful
-work is not a replacement for the confidential ETH vertical slice; it is a set
+work is not a replacement for confidential ETH; it is a set
 of constraints for network privacy, encrypted mempools, validator accountability,
 and proving UX.
 
@@ -141,11 +149,11 @@ Ethereum client, transaction, and validator surface this fork is modifying.
 
 ### Network-Origin Privacy
 
-- Dandelion++ remains Phase 1, but it must be implemented with peer-management
-  hardening. The 2025 NDSS Monero eclipse-attack work is directly relevant
-  because Monero is the production Dandelion++ deployment to learn from, and the
-  attack class targets the surrounding P2P connection manager as much as the
-  transaction relay algorithm.
+- Dandelion++ remains required client functionality, but it must be implemented
+  with peer-management hardening. The 2025 NDSS Monero eclipse-attack work is
+  directly relevant because Monero is the production Dandelion++ deployment to
+  learn from, and the attack class targets the surrounding P2P connection
+  manager as much as the transaction relay algorithm.
 - The implementation must monitor and test connection churn, biased stem-peer
   selection, outbound-slot monopolization, repeated disconnect/reconnect
   pressure, and timing observation by adversarial peers.
@@ -155,13 +163,13 @@ Ethereum client, transaction, and validator surface this fork is modifying.
 
 ### Encrypted Mempool Direction
 
-Phase 1 encrypted mempool work should be scoped around threshold encryption, with
-batched threshold encryption as the research direction to track. The strongest
-current line of work is:
+Encrypted mempool work should be scoped around threshold encryption, with batched
+threshold encryption as the research direction to track. The strongest current
+line of work is:
 
 - "Shutter Network: Private Transactions from Threshold Cryptography" (ePrint
   2024/1981): useful as a deployed threshold-encryption reference, but not as a
-  design to copy uncritically because later work identifies concrete security
+  design to copy uncritically because newer work identifies concrete security
   pitfalls in earlier encrypted-mempool constructions.
 - "Mempool Privacy via Batched Threshold Encryption: Attacks and Defenses"
   (USENIX Security 2024): establishes the batched threshold-encryption framing,
@@ -185,6 +193,30 @@ a local-only optional wallet mode. It needs a network-level committee/decryption
 model, ciphertext propagation path, inclusion rules, fallback behavior, and
 tests for pending-transaction privacy when transactions are not included.
 
+### Block Propagation And Inclusion Path
+
+The privacy client is incomplete until private transactions can move through the
+real block path. Mempool privacy that stops at transaction relay is not a working
+client.
+
+- Block builders must have a specified path for selecting encrypted or shielded
+  transactions, obtaining or verifying the required decryption/proof material,
+  and constructing blocks that normal privacy-profile nodes can validate.
+- Block propagation must carry whatever private transaction, proof, commitment,
+  or decryption-share data is required for peers to import the block without
+  relying on side channels or local-only state.
+- Block validation and import must enforce the privacy fork rules directly. A
+  private transaction that only works in a helper, script, RPC shortcut, or local
+  test harness is not implemented.
+- Reorg, rebroadcast, and recovery behavior must preserve privacy semantics.
+  Retrying after missed inclusion must not reveal origin metadata, plaintext
+  transaction contents, or key-release timing that the normal path hides.
+- Compatibility fallback is allowed only as a liveness or emergency mechanism.
+  It must be observable and must not be the primary path that makes tests pass.
+- Long-running engineering sessions, branch size, or implementation difficulty
+  are not scope boundaries. They do not justify carving the client into branded
+  slices or merging a fallback-only path.
+
 ### Threshold Accountability
 
 Threshold encryption creates a new collusion and key-release surface. The fork
@@ -203,7 +235,7 @@ CCA-secure traceable threshold encryption, as a requirement source for:
 it studies randomized partitioning and decoy structure for scalable
 untraceability. This fork should not immediately import a new anonymity-set
 construction, but it should avoid baking in data structures that make decoys,
-partitioning, or accumulator-backed scaling impossible later.
+partitioning, or accumulator-backed scaling impossible to add.
 
 ### Proving UX And Operations
 
@@ -272,7 +304,7 @@ on a production path with tests or clearly quarantined as non-production tooling
 
 - Remove or quarantine dead privacy modules. Do not keep packages that are not
   imported by the client path unless they are explicitly marked as test fixtures
-  or research prototypes.
+  or non-production research tooling.
 - Privacy1 fork gating is the only activation path for privacy consensus
   changes. No precompile, transaction type, or state-transition behavior should
   become active merely because an unrelated fork is active.
@@ -280,8 +312,9 @@ on a production path with tests or clearly quarantined as non-production tooling
   must be impossible to mistake for value-bearing network readiness.
 - Placeholder gas constants must stay labelled as placeholders until benchmarked
   against realistic proof sizes and verification costs.
-- Avoid competing roadmap documents. `shape.md` owns scope and phase alignment;
-  other docs may describe status, but they must not reclassify Phase 1 items.
+- Avoid competing roadmap documents. `shape.md` owns scope and client alignment;
+  other docs may describe status, but they must not reclassify required client
+  guarantees as separate tracks.
 - Every privacy feature needs one wired path and one verification story. Tests
   should cover the path users or nodes actually exercise.
 - Do not add optional user-facing privacy modes for roadmap requirements. The
@@ -294,9 +327,11 @@ on a production path with tests or clearly quarantined as non-production tooling
 - Scope wallet conveniences separately from consensus. RPC helpers may make
   wallet integration easier, but they do not substitute for protocol or network
   privacy.
-- Reject vague deferrals. If the attached roadmap places an item in Phase 1,
-  this fork must not move it out of the atomic sprint without explicitly
-  documenting the reason and the privacy gap it creates.
+- Reject vague deferrals. If a required privacy guarantee is not wired into the
+  client, say it is incomplete and document the privacy gap it creates.
+- Reject fake completion. A helper, local harness, compatibility fallback,
+  research package, or unconnected protocol stub is not a delivered client
+  feature until the normal node path uses it and tests prove that path.
 
 ## Current Review
 
@@ -304,13 +339,11 @@ Review date: 2026-06-16.
 
 Reviewed remote state after `git fetch --all --prune`:
 
-- `origin/master` was unchanged at
-  `a9ab4ec9f7310741ff48d44d260339e348d769cc`.
-- `origin/claude/go-ethereum-client-mods-8sz2dl` contained Dandelion++ work in
-  `1091718a3 eth, p2p/dandelion: wire Dandelion++ network-origin privacy into
-  the live tx path`, followed by
-  `fae8f09e8 shape: record Dandelion++ design corrections from initial-design
-  review`.
+- `origin/master` was at
+  `bc02f2c1fecea76bc7924f9674b8b0063e83debd`.
+- `origin/claude/go-ethereum-client-mods-8sz2dl` was at
+  `4255ec109` and contained Dandelion++, threshold cryptography, encrypted
+  envelope propagation, keyper registry, and DKG work.
 
 The remote work branch is useful, but it is not implementation-complete against
 this shape document and should not be treated as merge-ready without follow-up.
@@ -318,86 +351,100 @@ this shape document and should not be treated as merge-ready without follow-up.
 Implemented on that branch:
 
 - `p2p/dandelion/dandelion.go` restores a Dandelion++ router package.
-- `eth/handler.go` and `eth/handler_dandelion.go` wire Dandelion routing into
-  the live transaction broadcast path.
+- `eth/handler.go`, `eth/handler_dandelion.go`, and the `dle` subprotocol wire
+  Dandelion routing into the live transaction broadcast path.
 - `eth/api_backend.go` marks RPC `SendTx` submissions as local-origin.
 - Peer connect/disconnect refreshes the Dandelion eligible-peer set.
 - Inbound transaction gossip marks hashes as fluffed and cancels local embargo
   state.
 - An embargo loop diffuses expired stemmed transactions as a safety fallback.
-- Tests cover one-hop stem delivery, remote transaction diffusion, embargo
-  fallback, router behavior, and basic origin-tracker behavior.
+- `eth/handler_encmempool.go` and the `enc` subprotocol propagate opaque
+  encrypted envelopes between peers.
+- `core/privacy/threshold`, `core/privacy/encmempool`, and
+  `core/privacy/keyper` add primitive, buffer, registry, and DKG building blocks.
 
 Blocking gaps against this shape:
 
-- The branch adds normal user-facing opt-in and tuning flags:
-  `--dandelion`, `--dandelion.stemprob`, `--dandelion.epoch`,
-  `--dandelion.embargo`, and `--dandelion.embargojitter`. This conflicts with
-  the requirement that roadmap privacy works out of the box on supported privacy
-  networks and is not presented as a normal user preference.
-- The implementation is single-hop, not full Dandelion++. Stem relay uses the
-  ordinary eth transaction send path, so the receiving peer cannot identify the
-  transaction as stem-phase traffic and continue stemming it.
-- Local transactions can still fluff at the origin because the same stem/fluff
-  coin is applied at hop zero. Local-origin transactions should enter stem phase
-  whenever an eligible successor exists.
-- Local-origin tracking is consume-once and is fed by RPC `SendTx` only. It does
-  not persist across rebroadcasts and does not cover local wallet, miner,
-  journal-resurrected, or locally-resubmitted transactions.
-- Peer selection uses a single epoch successor. It does not implement at least
-  two deterministic per-epoch successors or hardening against churn and
-  successor monopolization.
-- Eclipse and connection-reset hardening is not implemented. Metrics cover stem,
-  fluff, embargo, and peer fallback, but not suspected eclipse pressure,
-  connection-reset pressure, or churn-based manipulation.
-- The branch's `shape.md` is based on an older document and drops the current
-  opinionated-defaults and 2024-2026 research sections. Any merge must preserve
-  the current `shape.md` content and add the Dandelion design corrections on top.
-- Encrypted mempool, batched threshold encryption, threshold accountability,
-  shielded-pool decoy scaling, source-of-funds compatibility proofs, and prover
-  orchestration remain document-level direction only. No implementation was found
-  for those items.
+- The branch still uses delivery labels in commit subjects and docs. Merge work
+  must remove that framing and preserve this document's single-client target.
+- Encrypted envelope propagation is not a private transaction path. It does not
+  select encrypted transactions for blocks, release or verify decryption
+  material, construct blocks, propagate block data, import blocks, or preserve
+  privacy through reorg/rebroadcast behavior.
+- Block propagation and inclusion are not covered by the privacy implementation
+  tests. No test proves that a private transaction can enter the normal node,
+  land in a block, propagate to another node, validate, update state, and retain
+  the intended privacy guarantees.
+- The registry and DKG work are not integrated into a live committee lifecycle.
+  Tests exercise local primitives and in-memory state, not validator/keyper
+  registration, share distribution, accountability, block import, or key-release
+  timing.
+- Source-of-funds compatibility proofs, prover orchestration, shielded-pool decoy
+  scaling, and accountability surfaces remain design requirements, not client
+  paths.
+
+Test review:
+
+- Keep the Dandelion router and handler tests that exercise origin stem routing,
+  multi-hop relay, relay embargo, rebroadcast persistence, sync withholding,
+  successor stability, and churn helpers. They are meaningful transaction
+  propagation tests.
+- Do not treat Dandelion tests as full client acceptance. They do not prove block
+  construction, block propagation, block import, or private transaction inclusion.
+- Keep threshold, envelope, registry, and DKG tests as primitive tests only.
+  They are useful lower-level checks, but they are not proof that the client
+  works.
+- Rename or downgrade tests whose comments claim they prove encrypted-mempool
+  privacy when they only check ciphertext buffering or byte containment. A test
+  such as `TestNonIncludedStaysEncrypted` is acceptable as a buffer/unit test,
+  but it is not a client privacy guarantee.
+- `TestEncryptedMempoolPropagation` proves opaque envelope gossip across `enc`
+  peers. It does not prove transaction validity, committee decryption, block
+  selection, block propagation, block import, or reorg safety.
+- Delete or rewrite any test that passes only because a helper, local harness,
+  compatibility fallback, or protocol stub bypasses the normal node path.
 
 Required before merge:
 
-- Rebase the Dandelion branch onto current `origin/master` and preserve this
-  document's latest requirements.
+- Rebase the implementation branch onto current `origin/master` and preserve
+  this document's latest requirements.
 - Replace normal user opt-in flags with opinionated network/profile defaults.
   Any override must be clearly scoped as devnet, diagnostic, compatibility, or
   emergency tooling.
-- Add an explicit stem-relay signal or subprotocol so honest relays can continue
-  stem propagation beyond one hop, with fallback to ordinary gossip for peers
-  that do not support it.
-- Split origin and relay routing semantics so originators never randomly fluff
-  when a stem successor is available.
-- Make local-origin state persistent until fluff sighting, inclusion, or bounded
+- Keep the explicit stem-relay signal or subprotocol so honest relays continue
+  stem propagation beyond one hop, with fallback to ordinary gossip only for
+  unsupported peers or emergency/liveness handling.
+- Keep origin and relay routing semantics separated so originators never
+  randomly fluff when a stem successor is available.
+- Keep local-origin state persistent until fluff sighting, inclusion, or bounded
   expiry, and mark all local submission/resubmission paths.
-- Replace single-successor routing with at least two deterministic per-epoch
-  successors and tests for churn resistance.
-- Add tests for multi-hop stem propagation, rebroadcast behavior, non-RPC local
-  paths, peer churn, successor loss, and eclipse/connection-reset pressure.
+- Keep at least two deterministic per-epoch successors and tests for churn
+  resistance.
+- Add production-path tests for private transaction block construction, block
+  propagation, block import, reorg/rebroadcast behavior, missing or malformed
+  decryption/proof material, and unsupported-peer fallback observability.
 
 ## Current Alignment Notes
 
-- Confidential ETH state transition work is Phase 1.
-- Stealth address support is Phase 1.
-- Dandelion++ network-origin privacy is Phase 1 and currently incomplete until
-  wired into live propagation.
-- Encrypted mempool work is also Phase 1. It may be sequenced after Dandelion++
-  inside the same atomic sprint, but it is not a separate phase or a later merge
-  target. The target shape must account for modern threshold-encryption and
-  batched-threshold-encryption research before the sprint is considered complete.
-- Privacy precompiles are Phase 3 roadmap material and must remain gated by the
-  Privacy1 fork while this fork uses them as enabling infrastructure.
-- Protocol-native shielded-pool integration overlaps Phase 4, but this fork's
-  current shielded ETH vertical slice is acceptable only because it is explicitly
-  gated and devnet-scoped until production cryptographic setup exists.
+- Confidential ETH state-transition work is part of the required client target.
+- Stealth address support is part of the required client target.
+- Dandelion++ network-origin privacy is part of the required client target and
+  remains incomplete until wired into live propagation.
+- Encrypted mempool work is part of the required client target. It may be
+  implemented after Dandelion++ for engineering order, but it is not a separate
+  delivery track or merge target. The target shape must account for modern
+  threshold-encryption and batched-threshold-encryption research before the
+  client is considered complete.
+- Privacy precompiles must remain gated by the Privacy1 fork while this fork
+  uses them as enabling infrastructure.
+- Protocol-native shielded-pool integration must stay explicitly gated and
+  devnet-scoped until production cryptographic setup exists.
 
 ## Done Means
 
 No privacy feature is considered done because code exists. It is done only when:
 
-- the phase placement matches the attached roadmap;
+- the implementation matches the required client target;
 - the code is wired into the intended client path;
 - unsupported paths fail closed or are explicitly labelled;
 - tests cover the real path, not just isolated helpers;

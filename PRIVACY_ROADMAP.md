@@ -6,9 +6,11 @@ This fork begins implementing the client-side building blocks described in
 
 The published roadmap uses phase labels to organise multi-year, multi-team
 protocol work. In this fork those labels are source-context only: per `shape.md`
-the privacy work here is **one atomic sprint**, not a sequence of internal phases,
-and it is either delivered as one coherent, compiling, tested production shape or
-called incomplete. This document describes the status of that sprint.
+there is **one client target**, not a sequence of internal phases, demos, betas, or
+slices. The privacy guarantees are either wired into the real client paths,
+working out of the box on the privacy network profile and covered by tests, or
+described plainly as incomplete. This document describes the status of that one
+client target; `shape.md` is authoritative for scope.
 
 ## What is implemented
 
@@ -21,9 +23,9 @@ called incomplete. This document describes the status of that sprint.
 | **Shielded-pool primitives** — incremental Merkle commitment tree + nullifier set for double-spend prevention | 2 / 4 | [`core/privacy/shieldedpool.go`](core/privacy/shieldedpool.go) |
 | **Network-origin privacy** — Dandelion++ stem/fluff transaction propagation, wired into the live broadcast path with embargo failsafe | 1 | [`p2p/dandelion/dandelion.go`](p2p/dandelion/dandelion.go), [`eth/handler_dandelion.go`](eth/handler_dandelion.go) |
 
-> Network-origin privacy (Dandelion++) is a **Phase 1 core requirement** and is
+> Network-origin privacy (Dandelion++) is a **core client requirement** and is
 > **wired into the live transaction-propagation path** as a **multi-hop stem**:
-> locally-originated transactions enter the stem phase by default and are relayed
+> locally-originated transactions enter stem routing by default and are relayed
 > over a dedicated [`dle`](eth/protocols/dandelion) sub-protocol that lets honest
 > relays continue the stem, with an embargo failsafe and ordinary gossip as the
 > safety fallback. The originator never diffuses by chance, local-origin status
@@ -50,14 +52,13 @@ called incomplete. This document describes the status of that sprint.
 - The `privacy` RPC namespace never holds private keys and never signs:
   `BuildShield` returns an *unsigned* transaction for the caller to sign and submit.
 
-## Not yet implemented (later roadmap phases)
+## Future roadmap beyond the client target
 
-These require protocol-level consensus changes and/or production zk circuits that
-are out of scope for this changeset, but the primitives above are the substrate
-they build on: a native confidential-ETH transaction type (Phase 1), an encrypted
-threshold-decryption mempool (Phase 1), confidential ERC-20/721 standards
-(Phase 2), zkEVM execution (Phase 3/5), protocol-native shielded pools and fair
-ordering (Phase 4), and post-quantum migration (Phase 5).
+These are out of scope for the current privacy client target and are recorded only
+as roadmap context (per `shape.md`, not deferred tracks of this work): confidential
+ERC-20/721 token standards, zkEVM private execution, protocol-native shielded pools
+and fair ordering, and post-quantum migration. The primitives and consensus
+machinery in this client are the substrate they would build on.
 
 ## Tests
 

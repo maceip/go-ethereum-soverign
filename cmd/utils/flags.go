@@ -20,6 +20,7 @@ package utils
 import (
 	"context"
 	"crypto/ecdsa"
+	crand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/fdlimit"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/privacy/keyper"
+	"github.com/ethereum/go-ethereum/core/privacy/keyper/keypernet"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/txpool/blobpool"
 	"github.com/ethereum/go-ethereum/core/txpool/legacypool"
@@ -2060,7 +2063,38 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 			if err := core.EnablePrivacyDevnet(cfg.Genesis); err != nil {
 				Fatalf("Failed to enable developer privacy mode: %v", err)
 			}
-			log.Warn("Developer privacy mode enabled: shielded transactions use an INSECURE devnet trusted setup")
+			// Self-host an encrypted-mempool keyper committee so the encrypted
+			// mempool runs out of the box on the dev privacy profile: bootstrap the
+			// committee, install its registry in genesis, and hand the key shares to
+			// the node to enable decrypt-at-inclusion. DEVNET ONLY: one process holds
+			// the whole committee, which provides no threshold trust.
+			const devKeyperT, devKeyperN = 2, 3
+			keypers, mpk, _, err := keypernet.Bootstrap(devKeyperT, devKeyperN, crand.Reader)
+			if err != nil {
+				Fatalf("Failed to bootstrap developer keyper committee: %v", err)
+			}
+			keyperAddrs := make([]common.Address, devKeyperN)
+			for i := range keyperAddrs {
+				keyperAddrs[i] = common.BytesToAddress([]byte{byte(i + 1)})
+			}
+			regStorage, err := keyper.BuildRegistryStorageIBE(devKeyperT, mpk, keyperAddrs)
+			if err != nil {
+				Fatalf("Failed to build keyper registry storage: %v", err)
+			}
+			regAcct := cfg.Genesis.Alloc[core.DevnetKeyperRegistry]
+			if regAcct.Balance == nil {
+				regAcct.Balance = new(big.Int)
+			}
+			if regAcct.Storage == nil {
+				regAcct.Storage = make(map[common.Hash]common.Hash)
+			}
+			for k, v := range regStorage {
+				regAcct.Storage[k] = v
+			}
+			cfg.Genesis.Alloc[core.DevnetKeyperRegistry] = regAcct
+			cfg.EncryptedMempoolRegistry = core.DevnetKeyperRegistry
+			cfg.DevPrivacyKeypers = keypers
+			log.Warn("Developer privacy mode enabled: shielded transactions use an INSECURE devnet trusted setup; encrypted-mempool committee is self-hosted in-process (no threshold trust)")
 		}
 
 		// If a datadir is specified, ensure that any preexisting chain in that location
