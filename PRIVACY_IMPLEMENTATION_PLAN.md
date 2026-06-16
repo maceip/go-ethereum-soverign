@@ -231,10 +231,17 @@ work. Dandelion++ origin privacy is the other Phase 1 network-privacy item.
      duplicate-index rejection, and serialization. Trusted-dealer setup is
      devnet-only and clearly labelled, mirroring the shielded trusted-setup posture;
      production requires a DKG.
-   - **Stage 2 — encrypted-tx envelope, mempool buffer, and propagation (NEXT).**
-     A ciphertext transaction envelope carrying a Stage-1 `Ciphertext`, a holding
-     buffer for still-encrypted pending txs, and a propagation path, with tests for
-     privacy of transactions that are never included.
+   - **Stage 2a — encrypted-tx envelope and mempool buffer (DONE).**
+     [`core/privacy/encmempool`](core/privacy/encmempool) provides an `Envelope`
+     wrapping a Stage-1 ciphertext (identified by its content hash) and a bounded,
+     concurrency-safe `Pool` that holds and moves only ciphertext. Tested for
+     dedup/eviction and for the core privacy property: a buffered envelope that is
+     never included exposes only ciphertext, and its plaintext is recoverable only
+     with a threshold of committee decryption shares.
+   - **Stage 2b — network propagation (NEXT).** A dedicated `enc` sub-protocol that
+     gossips encrypted envelopes between capable peers, so the encrypted mempool is
+     network-level rather than a local-only buffer, with multi-node propagation
+     tests.
    - **Stage 3 — committee decryption and block inclusion.** Share collection at
      inclusion time, proposer-side combination/decryption before execution,
      inclusion/ordering rules, fallback when the committee is unavailable, and
